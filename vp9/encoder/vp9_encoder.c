@@ -565,6 +565,12 @@ static void init_config(struct VP9_COMP *cpi, VP9EncoderConfig *oxcf) {
 
   cm->width = oxcf->width;
   cm->height = oxcf->height;
+
+  // TODO(ram-ittiam): Basic sanity checks should be added for setting 'use_gpu'
+  // flag. For example, when the current frame's resolution is different from
+  // the previous frame, then 'use_gpu' should be set to '0'. All similar
+  // conditions needs to be identified and added.
+  cm->use_gpu = cpi->oxcf.use_gpu;
   vp9_alloc_compressor_data(cpi);
 
   // Spatial scalability.

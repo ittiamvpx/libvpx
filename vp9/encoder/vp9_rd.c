@@ -513,9 +513,11 @@ const YV12_BUFFER_CONFIG *vp9_get_scaled_ref_frame(const VP9_COMP *cpi,
 }
 
 int vp9_get_switchable_rate(const VP9_COMP *cpi) {
+  const VP9_COMMON *const cm = &cpi->common;
   const MACROBLOCKD *const xd = &cpi->mb.e_mbd;
   const MB_MODE_INFO *const mbmi = &xd->mi[0]->mbmi;
-  const int ctx = vp9_get_pred_context_switchable_interp(xd);
+  const int ctx = cm->data_parallel_processing ?
+      SWITCHABLE_FILTERS : vp9_get_pred_context_switchable_interp(xd);
   return SWITCHABLE_INTERP_RATE_FACTOR *
              cpi->switchable_interp_costs[ctx][mbmi->interp_filter];
 }

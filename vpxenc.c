@@ -353,6 +353,8 @@ static const arg_def_t cq_level = ARG_DEF(NULL, "cq-level", 1,
 static const arg_def_t max_intra_rate_pct = ARG_DEF(NULL, "max-intra-rate", 1,
                                                     "Max I-frame bitrate (pct)");
 
+static const arg_def_t gpu = ARG_DEF(NULL, "gpu", 0, "Use GPU compute, Experimental");
+
 #if CONFIG_VP8_ENCODER
 static const arg_def_t token_parts =
     ARG_DEF(NULL, "token-parts", 1, "Number of token partitions to use, log2");
@@ -1133,6 +1135,8 @@ static int parse_stream_params(struct VpxEncoderConfig *global,
       config->have_kf_max_dist = 1;
     } else if (arg_match(&arg, &kf_disabled, argi)) {
       config->cfg.kf_mode = VPX_KF_DISABLED;
+    } else if (arg_match(&arg, &gpu, argi)) {
+      config->cfg.use_gpu = 1;
 #if CONFIG_VP9 && CONFIG_VP9_HIGHBITDEPTH
     } else if (arg_match(&arg, &test16bitinternalarg, argi)) {
       if (strcmp(global->codec->name, "vp9") == 0) {

@@ -422,6 +422,7 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
   MB_MODE_INFO *const mbmi = &xd->mi[0]->mbmi;
   struct macroblockd_plane *const pd = &xd->plane[0];
   PREDICTION_MODE best_mode = ZEROMV;
+  PREDICTION_MODE start_mode = NEARESTMV, end_mode = NEWMV;
   MV_REFERENCE_FRAME ref_frame, best_ref_frame = LAST_FRAME;
   TX_SIZE best_tx_size = MIN(max_txsize_lookup[bsize],
                              tx_mode_to_biggest_tx_size[cm->tx_mode]);
@@ -499,10 +500,12 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
     frame_mv[NEWMV][ref_frame].as_int = INVALID_MV;
     frame_mv[ZEROMV][ref_frame].as_int = 0;
 
-    if (xd->up_available)
-      filter_ref = xd->mi[-xd->mi_stride]->mbmi.interp_filter;
-    else if (xd->left_available)
-      filter_ref = xd->mi[-1]->mbmi.interp_filter;
+    if (!cm->data_parallel_processing) {
+      if (xd->up_available)
+        filter_ref = xd->mi[-xd->mi_stride]->mbmi.interp_filter;
+      else if (xd->left_available)
+        filter_ref = xd->mi[-1]->mbmi.interp_filter;
+    }
 
     if (cpi->ref_frame_flags & flag_list[ref_frame]) {
       const YV12_BUFFER_CONFIG *yv12 = get_ref_frame_buffer(cpi, ref_frame);
@@ -511,7 +514,7 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
       vp9_setup_pred_block(xd, yv12_mb[ref_frame], yv12, mi_row, mi_col,
                            sf, sf);
 
-      if (!cm->error_resilient_mode)
+      if (!cm->error_resilient_mode || cm->data_parallel_processing)
         vp9_find_mv_refs(cm, xd, tile, xd->mi[0], ref_frame,
                          candidates, mi_row, mi_col);
       else
@@ -523,7 +526,8 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
                             &frame_mv[NEARESTMV][ref_frame],
                             &frame_mv[NEARMV][ref_frame]);
 
-      if (!vp9_is_scaled(sf) && bsize >= BLOCK_8X8)
+      if (!vp9_is_scaled(sf) && bsize >= BLOCK_8X8 &&
+          (!cm->use_gpu || cm->data_parallel_processing))
         vp9_mv_pred(cpi, x, yv12_mb[ref_frame][0].buf, yv12->y_stride,
                     ref_frame, bsize);
     } else {
@@ -538,7 +542,34 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
 
     mbmi->ref_frame[0] = ref_frame;
 
-    for (this_mode = NEARESTMV; this_mode <= NEWMV; ++this_mode) {
+    // The encoder uses current block's neighbor (left, top, top-left etc.,)
+    // Mode info, thus making the algorithm/execution data serial. To off-load
+    // some of the algorithms to the GPU, we need make it data-parallel.
+    // We have currently data parallelized ZEROMV and NEWMV computations.
+    if (cm->use_gpu) {
+      if (cm->data_parallel_processing) {
+        start_mode = ZEROMV;
+        end_mode = NEWMV;
+      } else {
+        start_mode = NEARESTMV;
+        end_mode = NEARMV;
+
+        // Read the best_mode, best_rd etc., among ZEROMV, NEWMV
+        // as computed by the GPU
+        best_mode = xd->gpu_mvinfo[bsize]->mode;
+        best_rd = xd->gpu_mvinfo[bsize]->best_rd;
+        *returnrate = xd->gpu_mvinfo[bsize]->returnrate;
+        *returndistortion = xd->gpu_mvinfo[bsize]->returndistortion;
+        best_pred_filter = xd->gpu_mvinfo[bsize]->interp_filter;
+        best_tx_size = xd->gpu_mvinfo[bsize]->tx_size;
+        best_ref_frame = xd->gpu_mvinfo[bsize]->ref_frame[0];
+        skip_txfm = xd->gpu_mvinfo[bsize]->skip_txfm;
+        frame_mv[best_mode][ref_frame].as_int =
+            xd->gpu_mvinfo[bsize]->mv[0].as_int;
+      }
+    }
+
+    for (this_mode = start_mode; this_mode <= end_mode; ++this_mode) {
       int rate_mv = 0;
       int mode_rd_thresh;
 
@@ -565,7 +596,8 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
           continue;
       }
 
-      if (this_mode != NEARESTMV &&
+      if (!cm->data_parallel_processing &&
+          this_mode != NEARESTMV &&
           frame_mv[this_mode][ref_frame].as_int ==
               frame_mv[NEARESTMV][ref_frame].as_int)
         continue;
@@ -652,7 +684,8 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
 
       // Skipping checking: test to see if this block can be reconstructed by
       // prediction only.
-      if (cpi->allow_encode_breakout) {
+      if (!cm->data_parallel_processing &&
+          cpi->allow_encode_breakout) {
         encode_breakout_test(cpi, x, bsize, mi_row, mi_col, ref_frame,
                              this_mode, var_y, sse_y, yv12_mb, &rate, &dist);
         if (x->skip) {
@@ -696,6 +729,22 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
     // we are done.
     if (best_rd < INT64_MAX)
       break;
+  }
+
+  if (cm->data_parallel_processing) {
+    xd->gpu_mvinfo[bsize]->best_rd = best_rd;
+    xd->gpu_mvinfo[bsize]->returnrate = *returnrate;
+    xd->gpu_mvinfo[bsize]->returndistortion = *returndistortion;
+    xd->gpu_mvinfo[bsize]->mode = best_mode;
+    xd->gpu_mvinfo[bsize]->interp_filter = best_pred_filter;
+    xd->gpu_mvinfo[bsize]->tx_size = best_tx_size;
+    xd->gpu_mvinfo[bsize]->ref_frame[0] = best_ref_frame;
+    xd->gpu_mvinfo[bsize]->skip_txfm = skip_txfm;
+    xd->gpu_mvinfo[bsize]->segment_id = segment_id;
+    xd->gpu_mvinfo[bsize]->mv[0].as_int =
+        frame_mv[best_mode][best_ref_frame].as_int;
+
+    return ;
   }
 
   // If best prediction is not in dst buf, then copy the prediction block from

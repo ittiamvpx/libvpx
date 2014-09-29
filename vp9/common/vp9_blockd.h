@@ -121,6 +121,9 @@ static INLINE int b_height_log2(BLOCK_SIZE sb_type) {
 static INLINE int mi_width_log2(BLOCK_SIZE sb_type) {
   return mi_width_log2_lookup[sb_type];
 }
+static INLINE int mi_height_log2(BLOCK_SIZE sb_type) {
+  return mi_height_log2_lookup[sb_type];
+}
 
 // This structure now relates to 8x8 block regions.
 typedef struct {
@@ -147,6 +150,31 @@ typedef struct {
   MB_MODE_INFO mbmi;
   b_mode_info bmi[4];
 } MODE_INFO;
+
+// After the GPU completes its Inter MV compute task, it provides the MV result
+// of each block to the CPU in the following structure format
+
+// TODO(ram-ittiam): Elements of this structure like sb_type, tx_size,
+// segment_id etc., seem redundant. Analyze all the elements and remove the
+// ones that are not really required.
+typedef struct {
+  // Common for both INTER and INTRA blocks
+  BLOCK_SIZE sb_type;
+  PREDICTION_MODE mode;
+  TX_SIZE tx_size;
+  int skip_txfm;
+  int8_t segment_id;
+
+  // Only for INTER blocks
+  MV_REFERENCE_FRAME ref_frame[2];
+  int_mv mv[2];
+  INTERP_FILTER interp_filter;
+
+  // rd info
+  int64_t best_rd;
+  int returnrate;
+  int64_t returndistortion;
+} GPU_MV_INFO;
 
 static INLINE PREDICTION_MODE get_y_mode(const MODE_INFO *mi, int block) {
   return mi->mbmi.sb_type < BLOCK_8X8 ? mi->bmi[block].as_mode
@@ -208,6 +236,9 @@ typedef struct macroblockd {
 
   // A NULL indicates that the 8x8 is not part of the image
   MODE_INFO **mi;
+
+  /* pointer to MV results from GPU */
+  GPU_MV_INFO *gpu_mvinfo[BLOCK_SIZES];
 
   int up_available;
   int left_available;

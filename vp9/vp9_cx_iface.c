@@ -156,6 +156,7 @@ static vpx_codec_err_t validate_config(vpx_codec_alg_priv_t *ctx,
   RANGE_CHECK_HI(cfg, rc_resize_up_thresh,   100);
   RANGE_CHECK_HI(cfg, rc_resize_down_thresh, 100);
   RANGE_CHECK(cfg,        g_pass,         VPX_RC_ONE_PASS, VPX_RC_LAST_PASS);
+  RANGE_CHECK_BOOL(cfg,                   use_gpu);
 
   if (cfg->rc_resize_allowed == 1) {
     RANGE_CHECK(cfg, rc_scaled_width, 1, cfg->g_w);
@@ -420,6 +421,8 @@ static vpx_codec_err_t set_encoder_config(
   oxcf->frame_periodic_boost =  extra_cfg->frame_periodic_boost;
 
   oxcf->ss_number_layers = cfg->ss_number_layers;
+
+  oxcf->use_gpu = cfg->use_gpu;
 
   if (oxcf->ss_number_layers > 1) {
     int i;
@@ -1329,6 +1332,7 @@ static vpx_codec_enc_cfg_map_t encoder_usage_cfg_map[] = {
       {0},                    // ts_rate_decimator
       0,                      // ts_periodicity
       {0},                    // ts_layer_id
+      0,                      // use_gpu
 #if VPX_ENCODER_ABI_VERSION == (1 + VPX_CODEC_ABI_VERSION)
       "vp8.fpf"           // first pass filename
 #endif

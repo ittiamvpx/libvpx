@@ -709,6 +709,14 @@ extern "C" {
      * ts_periodicity=8, then ts_layer_id = (0,1,0,1,0,1,0,1).
     */
     unsigned int           ts_layer_id[VPX_TS_MAX_PERIODICITY];
+
+    /*!\brief Enable/disable GPU computing, if supported by the codec
+     *
+     * If GPU computing is enabled, part of the encoding handled by the CPU is
+     * off-loaded to GPU. The platform should support OpenCL GPU compute API.
+     * Still Experimental.
+     */
+    int                    use_gpu;
   } vpx_codec_enc_cfg_t; /**< alias for struct vpx_codec_enc_cfg */
 
 

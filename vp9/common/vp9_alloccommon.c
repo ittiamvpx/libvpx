@@ -36,6 +36,9 @@ void vp9_set_mb_mi(VP9_COMMON *cm, int width, int height) {
   cm->mi_rows = aligned_height >> MI_SIZE_LOG2;
   cm->mi_stride = calc_mi_size(cm->mi_cols);
 
+  cm->sb_cols = mi_cols_aligned_to_sb(cm->mi_cols) >> MI_BLOCK_SIZE_LOG2;
+  cm->sb_rows = mi_cols_aligned_to_sb(cm->mi_rows) >> MI_BLOCK_SIZE_LOG2;
+
   cm->mb_cols = (cm->mi_cols + 1) >> 1;
   cm->mb_rows = (cm->mi_rows + 1) >> 1;
   cm->MBs = cm->mb_rows * cm->mb_cols;
@@ -84,6 +87,34 @@ static int alloc_mi(VP9_COMMON *cm, int mi_size) {
   return 0;
 }
 
+static int vp9_alloc_gpu_interface_buffers(VP9_COMMON *cm) {
+  BLOCK_SIZE bsize;
+
+  // Allocate memory for GPU output buffers
+  // TODO(ram-ittiam): Do not allocate memory for block sizes that are not
+  // analysed by the GPU
+  for (bsize = BLOCK_8X8; bsize < BLOCK_SIZES; bsize++) {
+    const int blocks_in_row = (cm->sb_cols * num_mxn_blocks_wide_lookup[bsize]);
+    const int blocks_in_col = (cm->sb_rows * num_mxn_blocks_high_lookup[bsize]);
+
+    cm->gpu_mvinfo_base_array[bsize] = (GPU_MV_INFO *)vpx_calloc(
+        blocks_in_row * blocks_in_col,
+        sizeof(*cm->gpu_mvinfo_base_array[bsize]));
+    if (cm->gpu_mvinfo_base_array[bsize] == NULL)
+      return 1;
+  }
+  return 0;
+}
+
+static void vp9_free_gpu_interface_buffers(VP9_COMMON *cm) {
+  BLOCK_SIZE bsize;
+
+  for (bsize = 0; bsize < BLOCK_SIZES; bsize++) {
+    vpx_free(cm->gpu_mvinfo_base_array[bsize]);
+    cm->gpu_mvinfo_base_array[bsize] = NULL;
+  }
+}
+
 static void free_mi(VP9_COMMON *cm) {
   int i;
 
@@ -119,6 +150,13 @@ void vp9_free_ref_frame_buffers(VP9_COMMON *cm) {
 void vp9_free_context_buffers(VP9_COMMON *cm) {
   free_mi(cm);
 
+  if (cm->use_gpu) {
+    vp9_free_gpu_interface_buffers(cm);
+
+    vpx_free(cm->is_background_map);
+    cm->is_background_map = NULL;
+  }
+
   vpx_free(cm->last_frame_seg_map);
   cm->last_frame_seg_map = NULL;
 
@@ -135,6 +173,15 @@ int vp9_alloc_context_buffers(VP9_COMMON *cm, int width, int height) {
   vp9_set_mb_mi(cm, width, height);
   if (alloc_mi(cm, cm->mi_stride * calc_mi_size(cm->mi_rows)))
     goto fail;
+
+  if (cm->use_gpu) {
+    if (vp9_alloc_gpu_interface_buffers(cm))
+      goto fail;
+
+    cm->is_background_map = (uint8_t *)vpx_calloc(
+        cm->sb_rows * cm->sb_cols, sizeof(*cm->is_background_map));
+    if (!cm->is_background_map) goto fail;
+  }
 
   cm->last_frame_seg_map = (uint8_t *)vpx_calloc(cm->mi_rows * cm->mi_cols, 1);
   if (!cm->last_frame_seg_map) goto fail;

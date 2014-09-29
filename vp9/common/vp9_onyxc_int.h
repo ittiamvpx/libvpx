@@ -128,6 +128,9 @@ typedef struct VP9Common {
   int mb_cols, mi_cols;
   int mi_stride;
 
+  // SBs, sb_rows/cols is in 64-pixel units;
+  int sb_cols, sb_rows;
+
   /* profile settings */
   TX_MODE tx_mode;
 
@@ -154,6 +157,16 @@ typedef struct VP9Common {
   MODE_INFO **mi_grid_visible;
   MODE_INFO **prev_mi_grid_base;
   MODE_INFO **prev_mi_grid_visible;
+
+  // We allocate a GPU_MV_INFO struct for each block size in the frame.
+  // This memory space is populated by the GPU during inter MV analysis
+
+  // pointer to GPU output Buffers
+  GPU_MV_INFO *gpu_mvinfo_base_array[BLOCK_SIZES];
+
+  // pointer to a frame level buffer representing if the SB unit
+  // is background or not. This information is populated by the GPU.
+  uint8_t *is_background_map;
 
   // Persistent mb segment id map used in prediction.
   unsigned char *last_frame_seg_map;
@@ -194,6 +207,12 @@ typedef struct VP9Common {
   int frame_parallel_decoding_mode;
 
   int log2_tile_cols, log2_tile_rows;
+
+  int use_gpu;
+
+  // Indicates whether the current algorithm is processed in a data parallel
+  // manner
+  int data_parallel_processing;
 
   // Private data associated with the frame buffer callbacks.
   void *cb_priv;

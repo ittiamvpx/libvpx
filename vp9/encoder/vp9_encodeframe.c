@@ -134,6 +134,25 @@ static INLINE void set_modeinfo_offsets(VP9_COMMON *const cm,
   xd->mi[0] = cm->mi + idx_str;
 }
 
+static INLINE void set_mvinfo_offsets(VP9_COMMON *const cm,
+                                      MACROBLOCKD *const xd,
+                                      int mi_row,
+                                      int mi_col,
+                                      BLOCK_SIZE bsize) {
+  const int blocks_in_row = (cm->sb_cols * num_mxn_blocks_wide_lookup[bsize]);
+  const int block_index_row = (mi_row >> mi_height_log2(bsize));
+  const int block_index_col = (mi_col >> mi_width_log2(bsize));
+  xd->gpu_mvinfo[bsize] = cm->gpu_mvinfo_base_array[bsize] +
+      (block_index_row * blocks_in_row) + block_index_col;
+}
+
+static INLINE int get_sb_index(VP9_COMMON *const cm,
+                               int mi_row, int mi_col) {
+  const int sb_row_index = mi_row / MI_SIZE;
+  const int sb_col_index = mi_col / MI_SIZE;
+  return (cm->sb_cols * sb_row_index + sb_col_index);
+}
+
 static void set_offsets(VP9_COMP *cpi, const TileInfo *const tile,
                         int mi_row, int mi_col, BLOCK_SIZE bsize) {
   MACROBLOCK *const x = &cpi->mb;
@@ -147,6 +166,9 @@ static void set_offsets(VP9_COMP *cpi, const TileInfo *const tile,
   set_skip_context(xd, mi_row, mi_col);
 
   set_modeinfo_offsets(cm, xd, mi_row, mi_col);
+
+  if (cm->use_gpu)
+    set_mvinfo_offsets(cm, xd, mi_row, mi_col, bsize);
 
   mbmi = &xd->mi[0]->mbmi;
 
@@ -1860,8 +1882,14 @@ static void auto_partition_range(VP9_COMP *cpi, const TileInfo *const tile,
   int bsl = mi_width_log2(BLOCK_64X64);
   const int search_range_ctrl = (((mi_row + mi_col) >> bsl) +
                        get_chessboard_index(cm->current_video_frame)) & 0x1;
+
+  // When GPU is enabled, min_size and max_size is always chosen as
+  // BLOCK_8X8 and BLOCK_32X32 respectively to maintain data parallelism
+  // TODO(ram-ittiam): Even when GPU is enabled, limit the min_size and max_size
+  // based on previous frame's MODE_INFO.
+
   // Trap case where we do not have a prediction.
-  if (search_range_ctrl &&
+  if (!cm->use_gpu && search_range_ctrl &&
       (left_in_image || above_in_image || cm->frame_type != KEY_FRAME)) {
     int block;
     MODE_INFO **mi;
@@ -2796,7 +2824,7 @@ static void nonrd_pick_partition(VP9_COMP *cpi, const TileInfo *const tile,
     int pl = partition_plane_context(xd, mi_row, mi_col, bsize);
     sum_rate += cpi->partition_cost[pl][PARTITION_SPLIT];
     subsize = get_subsize(bsize, PARTITION_SPLIT);
-    for (i = 0; i < 4 && sum_rd < best_rd; ++i) {
+    for (i = 0; i < 4 && (sum_rd < best_rd || cm->data_parallel_processing); ++i) {
       const int x_idx = (i & 1) * ms;
       const int y_idx = (i >> 1) * ms;
 
@@ -2920,7 +2948,7 @@ static void nonrd_pick_partition(VP9_COMP *cpi, const TileInfo *const tile,
   *rate = best_rate;
   *dist = best_dist;
 
-  if (best_rate == INT_MAX)
+  if (best_rate == INT_MAX || cm->data_parallel_processing)
     return;
 
   // update mode info array
@@ -3089,6 +3117,7 @@ static void encode_nonrd_sb_row(VP9_COMP *cpi, const TileInfo *const tile,
     MODE_INFO **mi = cm->mi_grid_visible + idx_str;
     MODE_INFO **prev_mi = cm->prev_mi_grid_visible + idx_str;
     BLOCK_SIZE bsize;
+    int do_recon = !cm->data_parallel_processing;
 
     x->in_static_area = 0;
     x->source_variance = UINT_MAX;
@@ -3099,12 +3128,12 @@ static void encode_nonrd_sb_row(VP9_COMP *cpi, const TileInfo *const tile,
       case VAR_BASED_PARTITION:
         choose_partitioning(cpi, tile, mi_row, mi_col);
         nonrd_use_partition(cpi, tile, mi, tp, mi_row, mi_col, BLOCK_64X64,
-                            1, &dummy_rate, &dummy_dist, cpi->pc_root);
+                            do_recon, &dummy_rate, &dummy_dist, cpi->pc_root);
         break;
       case SOURCE_VAR_BASED_PARTITION:
         set_source_var_based_partition(cpi, tile, mi, mi_row, mi_col);
         nonrd_use_partition(cpi, tile, mi, tp, mi_row, mi_col, BLOCK_64X64,
-                            1, &dummy_rate, &dummy_dist, cpi->pc_root);
+                            do_recon, &dummy_rate, &dummy_dist, cpi->pc_root);
         break;
       case VAR_BASED_FIXED_PARTITION:
       case FIXED_PARTITION:
@@ -3113,22 +3142,35 @@ static void encode_nonrd_sb_row(VP9_COMP *cpi, const TileInfo *const tile,
                 get_nonrd_var_based_fixed_partition(cpi, mi_row, mi_col);
         set_fixed_partitioning(cpi, tile, mi, mi_row, mi_col, bsize);
         nonrd_use_partition(cpi, tile, mi, tp, mi_row, mi_col, BLOCK_64X64,
-                            1, &dummy_rate, &dummy_dist, cpi->pc_root);
+                            do_recon, &dummy_rate, &dummy_dist, cpi->pc_root);
         break;
       case REFERENCE_PARTITION:
-        if (sf->partition_check ||
-            !(x->in_static_area = is_background(cpi, tile, mi_row, mi_col))) {
+        // When GPU is enabled, the 'is_background' result is computed and
+        // stored during the data parallel processing.
+        if (cm->data_parallel_processing || !cm->use_gpu) {
+          x->in_static_area = is_background(cpi, tile, mi_row, mi_col);
+          if(cm->use_gpu) {
+            const int sb_index = get_sb_index(cm, mi_row, mi_col);
+            cm->is_background_map[sb_index] = x->in_static_area;
+          }
+        } else {
+          // No need to compute 'in_static_area' again.
+          const int sb_index = get_sb_index(cm, mi_row, mi_col);
+          x->in_static_area = cm->is_background_map[sb_index];
+        }
+
+        if (sf->partition_check || !x->in_static_area) {
           set_modeinfo_offsets(cm, xd, mi_row, mi_col);
           auto_partition_range(cpi, tile, mi_row, mi_col,
                                &sf->min_partition_size,
                                &sf->max_partition_size);
           nonrd_pick_partition(cpi, tile, tp, mi_row, mi_col, BLOCK_64X64,
-                               &dummy_rate, &dummy_dist, 1, INT64_MAX,
+                               &dummy_rate, &dummy_dist, do_recon, INT64_MAX,
                                cpi->pc_root);
         } else {
           copy_partitioning(cm, mi, prev_mi);
           nonrd_use_partition(cpi, tile, mi, tp, mi_row, mi_col,
-                              BLOCK_64X64, 1, &dummy_rate, &dummy_dist,
+                              BLOCK_64X64, do_recon, &dummy_rate, &dummy_dist,
                               cpi->pc_root);
         }
         break;
@@ -3241,6 +3283,21 @@ static int get_skip_encode_frame(const VP9_COMMON *cm) {
          cm->show_frame;
 }
 
+// TODO(ram-ittiam): Right now CPU performs the data parallel MV compute.
+// Modify it for actual GPU compute
+static void vp9_gpu_mv_compute(VP9_COMP *cpi, const TileInfo *const tile) {
+  VP9_COMMON *const cm = &cpi->common;
+  TOKENEXTRA *tok = cpi->tok;
+  int mi_row;
+
+  cm->data_parallel_processing = 1;
+  for (mi_row = tile->mi_row_start; mi_row < tile->mi_row_end;
+      mi_row += MI_BLOCK_SIZE) {
+    encode_nonrd_sb_row(cpi, tile, mi_row, &tok);
+  }
+  cm->data_parallel_processing = 0;
+}
+
 static void encode_tiles(VP9_COMP *cpi) {
   const VP9_COMMON *const cm = &cpi->common;
   const int tile_cols = 1 << cm->log2_tile_cols;
@@ -3255,6 +3312,16 @@ static void encode_tiles(VP9_COMP *cpi) {
       int mi_row;
 
       vp9_tile_init(&tile, cm, tile_row, tile_col);
+
+      // Call the Data parallel MV compute (to be performed by GPU)
+      if (cm->use_gpu &&
+          cpi->sf.use_nonrd_pick_mode && !frame_is_intra_only(cm)) {
+        // TODO(ram-ittiam): Remove this assert, after adding appropriate sanity
+        // checks for use_gpu setting
+        assert(cm->prev_mi != NULL);
+
+        vp9_gpu_mv_compute(cpi, &tile);
+      }
       for (mi_row = tile.mi_row_start; mi_row < tile.mi_row_end;
            mi_row += MI_BLOCK_SIZE) {
         if (cpi->sf.use_nonrd_pick_mode && !frame_is_intra_only(cm))

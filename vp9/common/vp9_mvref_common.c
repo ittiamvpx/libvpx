@@ -13,6 +13,8 @@
 
 // This function searches the neighbourhood of a given MB/SB
 // to try and find candidate reference vectors.
+// When data parallel processing is enabled, we use the previous frame's
+// MODE_INFO, to approximate the candidate reference vectors
 static void find_mv_refs_idx(const VP9_COMMON *cm, const MACROBLOCKD *xd,
                              const TileInfo *const tile,
                              MODE_INFO *mi, MV_REFERENCE_FRAME ref_frame,
@@ -20,6 +22,9 @@ static void find_mv_refs_idx(const VP9_COMMON *cm, const MACROBLOCKD *xd,
                              int block, int mi_row, int mi_col) {
   const int *ref_sign_bias = cm->ref_frame_sign_bias;
   int i, refmv_count = 0;
+  MODE_INFO **const mi_grid = cm->data_parallel_processing
+        ? &cm->prev_mi_grid_visible[mi_row * xd->mi_stride + mi_col]
+        : xd->mi;
   const MODE_INFO *prev_mi = !cm->error_resilient_mode && cm->prev_mi
         ? cm->prev_mi_grid_visible[mi_row * xd->mi_stride + mi_col]
         : NULL;
@@ -40,7 +45,7 @@ static void find_mv_refs_idx(const VP9_COMMON *cm, const MACROBLOCKD *xd,
   for (i = 0; i < 2; ++i) {
     const POSITION *const mv_ref = &mv_ref_search[i];
     if (is_inside(tile, mi_col, mi_row, cm->mi_rows, mv_ref)) {
-      const MODE_INFO *const candidate_mi = xd->mi[mv_ref->col + mv_ref->row *
+      const MODE_INFO *const candidate_mi = mi_grid[mv_ref->col + mv_ref->row *
                                                    xd->mi_stride];
       const MB_MODE_INFO *const candidate = &candidate_mi->mbmi;
       // Keep counts for entropy encoding.
@@ -60,7 +65,7 @@ static void find_mv_refs_idx(const VP9_COMMON *cm, const MACROBLOCKD *xd,
   for (; i < MVREF_NEIGHBOURS; ++i) {
     const POSITION *const mv_ref = &mv_ref_search[i];
     if (is_inside(tile, mi_col, mi_row, cm->mi_rows, mv_ref)) {
-      const MB_MODE_INFO *const candidate = &xd->mi[mv_ref->col + mv_ref->row *
+      const MB_MODE_INFO *const candidate = &mi_grid[mv_ref->col + mv_ref->row *
                                                     xd->mi_stride]->mbmi;
       different_ref_found = 1;
 
@@ -86,7 +91,7 @@ static void find_mv_refs_idx(const VP9_COMMON *cm, const MACROBLOCKD *xd,
     for (i = 0; i < MVREF_NEIGHBOURS; ++i) {
       const POSITION *mv_ref = &mv_ref_search[i];
       if (is_inside(tile, mi_col, mi_row, cm->mi_rows, mv_ref)) {
-        const MB_MODE_INFO *const candidate = &xd->mi[mv_ref->col + mv_ref->row
+        const MB_MODE_INFO *const candidate = &mi_grid[mv_ref->col + mv_ref->row
                                               * xd->mi_stride]->mbmi;
 
         // If the candidate is INTRA we don't want to consider its mv.
