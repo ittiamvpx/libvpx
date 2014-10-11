@@ -2827,6 +2827,26 @@ static void nonrd_pick_partition(VP9_COMP *cpi, const TileInfo *const tile,
     int pl = partition_plane_context(xd, mi_row, mi_col, bsize);
     sum_rate += cpi->partition_cost[pl][PARTITION_SPLIT];
     subsize = get_subsize(bsize, PARTITION_SPLIT);
+
+    // GPU mode : Let us try to avoid any further computations for 16x16,
+    // if its RD cost results from GPU suggests that 32x32 is better
+    if (cm->use_gpu && bsize == BLOCK_32X32) {
+      int64_t total_rd_16x16 = 0;
+      for (i = 0; i < 4; ++i) {
+        const int x_idx = (i & 1) * ms;
+        const int y_idx = (i >> 1) * ms;
+
+        if (mi_row + y_idx >= cm->mi_rows || mi_col + x_idx >= cm->mi_cols)
+          continue;
+        set_mvinfo_offsets(cm, xd, mi_row + y_idx, mi_col + x_idx, BLOCK_16X16);
+        total_rd_16x16 += xd->gpu_mvinfo[BLOCK_16X16]->best_rd;
+      }
+      // If the 32x32 RD cost is 12.5% lesser than the total RD cost(from GPU)
+      // of its sub 16x16 blocks, then avoid further computations for 16x16
+      if (best_rd < (total_rd_16x16 * 7) / 8)
+        sum_rd = INT64_MAX;
+    }
+
     for (i = 0; i < 4 && (sum_rd < best_rd || cm->data_parallel_processing); ++i) {
       const int x_idx = (i & 1) * ms;
       const int y_idx = (i >> 1) * ms;
@@ -3149,14 +3169,15 @@ static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
          sf->max_partition_size == BLOCK_32X32 &&
          sf->min_partition_size == BLOCK_8X8);
 
-  for (h = 0; h < num_32x32_in_64x64; h++) {
-    int total_rate[GPU_BLOCK_SIZES], total_dist[GPU_BLOCK_SIZES];
-    int rdcost[GPU_BLOCK_SIZES];
+  for (h = 0; h < num_32x32_in_64x64; ++h) {
+    int total_rate[GPU_BLOCK_SIZES];
+    int64_t total_dist[GPU_BLOCK_SIZES];
+    int64_t rdcost[GPU_BLOCK_SIZES];
 
     // First iteration(i = 0) will run for 32x32 block
     // Second iteration(i = 1) will run for four 16x16 childs blocks
     // Third iteration(i = 2) will run for sixteen(4*4) 8x8 child blocks
-    for (i = 0; i < GPU_BLOCK_SIZES; i++) {
+    for (i = 0; i < GPU_BLOCK_SIZES; ++i) {
       PC_TREE *pc_tree_i = cpi->pc_root->split[h];
       PC_TREE *pc_parent_i = cpi->pc_root;
       const int ms = num_8x8_blocks_wide_lookup[BLOCK_32X32];
@@ -3169,7 +3190,7 @@ static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
       sf->min_partition_size = bsize[i];
 
       // This loop runs for each 16x16 block, whenever applicable
-      for (j = 0; j < (split_into_16x16 ? 4 : 1); j++) {
+      for (j = 0; j < (split_into_16x16 ? 4 : 1); ++j) {
         PC_TREE *pc_tree_j = split_into_16x16 ? pc_tree_i->split[j] : pc_tree_i;
         PC_TREE *pc_parent_j =
             split_into_16x16 ? pc_parent_i->split[h] : pc_parent_i;
@@ -3179,7 +3200,7 @@ static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
         int split_into_8x8 = bsize[i] < BLOCK_16X16;
 
         // This loop runs for each 8x8 block, whenever applicable
-        for (k = 0; k < (split_into_8x8 ? 4 : 1); k++) {
+        for (k = 0; k < (split_into_8x8 ? 4 : 1); ++k) {
           PC_TREE *pc_tree = split_into_8x8 ? pc_tree_j->split[k] : pc_tree_j;
           PC_TREE *pc_parent =
               split_into_8x8 ? pc_parent_j->split[j] : pc_parent_j;
