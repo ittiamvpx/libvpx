@@ -49,6 +49,9 @@
 #define SPLIT_MV_ZBIN_BOOST  0
 #define INTRA_ZBIN_BOOST     0
 
+// Number of block sizes for which MV computations are done in GPU
+#define GPU_BLOCK_SIZES      3
+
 static void encode_superblock(VP9_COMP *cpi, TOKENEXTRA **t, int output_enabled,
                               int mi_row, int mi_col, BLOCK_SIZE bsize,
                               PICK_MODE_CONTEXT *ctx);
@@ -3096,6 +3099,132 @@ static void nonrd_use_partition(VP9_COMP *cpi,
   }
 }
 
+
+// In this function, a non-recursive, data-parallel execution of
+// nonrd_pick_partition in GPU is emulated.
+//
+// Recursive data serial design
+// ============================
+// Step 1 : Best MV computation for a 32x32 parent block is done
+// Step 2 : Best MV computation for the 1st child 16x16 is done
+// Step 3 : Best MV computation for all 8x8 child blocks of 1st 16x16 is done
+// Step 4 : Best MV computation for the 2nd child 16x16 is done
+// Step 5 : Best MV computation for all 8x8 child blocks of 2nd 16x16 is done
+// Step 6 : Best MV computation for the 3rd child 16x16 is done
+// Step 7 : Best MV computation for all 8x8 child blocks of 3rd 16x16 is done
+// Step 8 : Best MV computation for the 4th child 16x16 is done
+// Step 9 : Best MV computation for all 8x8 child blocks of 4th 16x16 is done
+//
+// Non-recursive data-parallel design(for GPU)
+// ===========================================
+// Step 1 : Best MV computation for a 32x32 parent block is done
+// Step 2 : Best MV computation for the 1st child 16x16 is done
+// Step 3 : Best MV computation for the 2nd child 16x16 is done
+// Step 4 : Best MV computation for the 3rd child 16x16 is done
+// Step 5 : Best MV computation for the 4th child 16x16 is done
+// Step 6 : EXIT now, if the 32x32 RD is lesser than the RD of 16x16 blocks
+// Step 7 : Best MV computation for all 8x8 child blocks of 1st 16x16 is done
+// Step 8 : Best MV computation for all 8x8 child blocks of 2nd 16x16 is done
+// Step 9 : Best MV computation for all 8x8 child blocks of 3rd 16x16 is done
+// Step 10 : Best MV computation for all 8x8 child blocks of 4th 16x16 is done
+// In GPU Steps 2 to 5 will be executed concurrently
+// In GPU Steps 7 to 10 will be conditionally performed based on the total
+// RD cost of 16x16 blocks
+static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
+                                               MACROBLOCK *const x,
+                                               const TileInfo *const tile,
+                                               int mi_row, int mi_col,
+                                               TOKENEXTRA **tp)
+{
+  SPEED_FEATURES * const sf = &cpi->sf;
+  VP9_COMMON * const cm = &cpi->common;
+  MACROBLOCKD * const xd = &x->e_mbd;
+  int h, i, j, k;
+  const BLOCK_SIZE bsize[GPU_BLOCK_SIZES] = { BLOCK_32X32, BLOCK_16X16,
+      BLOCK_8X8 };
+  const int num_32x32_in_64x64 = 4;
+
+  // Assumption : Only 32x32, 16x16 and 8x8 are required to be analyzed
+  assert(sf->use_square_partition_only &&
+         sf->max_partition_size == BLOCK_32X32 &&
+         sf->min_partition_size == BLOCK_8X8);
+
+  for (h = 0; h < num_32x32_in_64x64; h++) {
+    int total_rate[GPU_BLOCK_SIZES], total_dist[GPU_BLOCK_SIZES];
+    int rdcost[GPU_BLOCK_SIZES];
+
+    // First iteration(i = 0) will run for 32x32 block
+    // Second iteration(i = 1) will run for four 16x16 childs blocks
+    // Third iteration(i = 2) will run for sixteen(4*4) 8x8 child blocks
+    for (i = 0; i < GPU_BLOCK_SIZES; i++) {
+      PC_TREE *pc_tree_i = cpi->pc_root->split[h];
+      PC_TREE *pc_parent_i = cpi->pc_root;
+      const int ms = num_8x8_blocks_wide_lookup[BLOCK_32X32];
+      int col_idx_i = (h & 1) * ms;
+      int row_idx_i = (h >> 1) * ms;
+      int split_into_16x16 = bsize[i] < BLOCK_32X32;
+      total_rate[i] = total_dist[i] = 0;
+      // Limit the minimum partition size here, so that "nonrd_pick_partition"
+      // will not get called recursively
+      sf->min_partition_size = bsize[i];
+
+      // This loop runs for each 16x16 block, whenever applicable
+      for (j = 0; j < (split_into_16x16 ? 4 : 1); j++) {
+        PC_TREE *pc_tree_j = split_into_16x16 ? pc_tree_i->split[j] : pc_tree_i;
+        PC_TREE *pc_parent_j =
+            split_into_16x16 ? pc_parent_i->split[h] : pc_parent_i;
+        const int ms = num_8x8_blocks_wide_lookup[BLOCK_16X16];
+        int col_idx_j = col_idx_i + ((j & 1) * ms);
+        int row_idx_j = row_idx_i + (j >> 1) * ms;
+        int split_into_8x8 = bsize[i] < BLOCK_16X16;
+
+        // This loop runs for each 8x8 block, whenever applicable
+        for (k = 0; k < (split_into_8x8 ? 4 : 1); k++) {
+          PC_TREE *pc_tree = split_into_8x8 ? pc_tree_j->split[k] : pc_tree_j;
+          PC_TREE *pc_parent =
+              split_into_8x8 ? pc_parent_j->split[j] : pc_parent_j;
+          int col_idx = col_idx_j + (k & 1);
+          int row_idx = row_idx_j + (k >> 1);
+          int rate;
+          int64_t dist;
+
+          if (mi_col + col_idx >= tile->mi_col_end ||
+              mi_row + row_idx >= tile->mi_row_end)
+            continue;
+
+          // Let us try to avoid 8x8's MV computations if 32x32 is winning
+          // already
+          if (bsize[i] == BLOCK_8X8) {
+            assert(i == 2 &&
+                   bsize[0] == BLOCK_32X32 && bsize[1] == BLOCK_16X16);
+
+            // rdcost[0] corresponds to RD cost of 32x32 block
+            // rdcost[1] corresponds to total RD cost of four 16x16 blocks
+            // If the 32x32's RD cost is 12.5% lesser than 16x16's RD cost,
+            // then skip computations for 8x8
+            if (rdcost[0] < (rdcost[1] * 7) / 8) {
+              set_mvinfo_offsets(cm, xd, mi_row + row_idx, mi_col + col_idx,
+                                 BLOCK_8X8);
+              xd->gpu_mvinfo[BLOCK_8X8]->best_rd = INT64_MAX;
+              xd->gpu_mvinfo[BLOCK_8X8]->returnrate = INT32_MAX;
+              xd->gpu_mvinfo[BLOCK_8X8]->returndistortion = INT64_MAX;
+              continue;
+            }
+          }
+
+          load_pred_mv(x, &pc_parent->none);
+          nonrd_pick_partition(cpi, tile, tp, mi_row + row_idx,
+                               mi_col + col_idx, bsize[i], &rate, &dist, 0,
+                               INT64_MAX, pc_tree);
+          total_rate[i] += rate;
+          total_dist[i] += dist;
+        }
+      }
+      rdcost[i] = RDCOST(x->rdmult, x->rddiv, total_rate[i], total_dist[i]);
+    }
+  }
+}
+
 static void encode_nonrd_sb_row(VP9_COMP *cpi, const TileInfo *const tile,
                                 int mi_row, TOKENEXTRA **tp) {
   SPEED_FEATURES *const sf = &cpi->sf;
@@ -3160,18 +3289,22 @@ static void encode_nonrd_sb_row(VP9_COMP *cpi, const TileInfo *const tile,
         }
 
         if (sf->partition_check || !x->in_static_area) {
-          set_modeinfo_offsets(cm, xd, mi_row, mi_col);
-          auto_partition_range(cpi, tile, mi_row, mi_col,
-                               &sf->min_partition_size,
-                               &sf->max_partition_size);
-          nonrd_pick_partition(cpi, tile, tp, mi_row, mi_col, BLOCK_64X64,
-                               &dummy_rate, &dummy_dist, do_recon, INT64_MAX,
-                               cpi->pc_root);
+          if (!cm->data_parallel_processing) {
+            set_modeinfo_offsets(cm, xd, mi_row, mi_col);
+            auto_partition_range(cpi, tile, mi_row, mi_col,
+                                 &sf->min_partition_size,
+                                 &sf->max_partition_size);
+            nonrd_pick_partition(cpi, tile, tp, mi_row, mi_col, BLOCK_64X64,
+                                 &dummy_rate, &dummy_dist, do_recon, INT64_MAX,
+                                 cpi->pc_root);
+          } else {
+            nonrd_pick_partition_data_parallel(cpi, x, tile, mi_row, mi_col,
+                                               tp);
+          }
         } else {
           copy_partitioning(cm, mi, prev_mi);
-          nonrd_use_partition(cpi, tile, mi, tp, mi_row, mi_col,
-                              BLOCK_64X64, do_recon, &dummy_rate, &dummy_dist,
-                              cpi->pc_root);
+          nonrd_use_partition(cpi, tile, mi, tp, mi_row, mi_col, BLOCK_64X64,
+                              do_recon, &dummy_rate, &dummy_dist, cpi->pc_root);
         }
         break;
       default:
