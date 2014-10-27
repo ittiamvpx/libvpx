@@ -394,7 +394,7 @@ void vp9_first_pass(VP9_COMP *cpi, const struct lookahead_entry *source) {
   TileInfo tile;
   struct macroblock_plane *const p = x->plane;
   struct macroblockd_plane *const pd = xd->plane;
-  const PICK_MODE_CONTEXT *ctx = &cpi->pc_root->none;
+  const PICK_MODE_CONTEXT *ctx = &cpi->pc_root[x->thread_id]->none;
   int i;
 
   int recon_yoffset, recon_uvoffset;
@@ -496,7 +496,7 @@ void vp9_first_pass(VP9_COMP *cpi, const struct lookahead_entry *source) {
   xd->mi = cm->mi_grid_visible;
   xd->mi[0] = cm->mi;
 
-  vp9_frame_init_quantizer(cpi);
+  vp9_frame_init_quantizer(cpi, x);
 
   for (i = 0; i < MAX_MB_PLANE; ++i) {
     p[i].coeff = ctx->coeff_pbuf[i][1];

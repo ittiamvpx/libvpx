@@ -39,14 +39,15 @@ struct CYCLIC_REFRESH {
   // Cyclic refresh map.
   signed char *map;
   // Projected rate and distortion for the current superblock.
-  int64_t projected_rate_sb;
-  int64_t projected_dist_sb;
+  int64_t *projected_rate_sb;
+  int64_t *projected_dist_sb;
   // Thresholds applied to projected rate/distortion of the superblock.
   int64_t thresh_rate_sb;
   int64_t thresh_dist_sb;
 };
 
 CYCLIC_REFRESH *vp9_cyclic_refresh_alloc(int mi_rows, int mi_cols) {
+  const int sb_rows = mi_rows >> MI_BLOCK_SIZE_LOG2;
   CYCLIC_REFRESH *const cr = vpx_calloc(1, sizeof(*cr));
   if (cr == NULL)
     return NULL;
@@ -57,11 +58,16 @@ CYCLIC_REFRESH *vp9_cyclic_refresh_alloc(int mi_rows, int mi_cols) {
     return NULL;
   }
 
+  cr->projected_rate_sb = vpx_calloc(sb_rows, sizeof(*cr->projected_rate_sb));
+  cr->projected_dist_sb = vpx_calloc(sb_rows, sizeof(*cr->projected_dist_sb));
+
   return cr;
 }
 
 void vp9_cyclic_refresh_free(CYCLIC_REFRESH *cr) {
   vpx_free(cr->map);
+  vpx_free(cr->projected_rate_sb);
+  vpx_free(cr->projected_dist_sb);
   vpx_free(cr);
 }
 
@@ -92,11 +98,11 @@ static int apply_cyclic_refresh_bitrate(const VP9_COMMON *cm,
 // mode, and rate/distortion.
 static int candidate_refresh_aq(const CYCLIC_REFRESH *cr,
                                 const MB_MODE_INFO *mbmi,
-                                BLOCK_SIZE bsize, int use_rd) {
+                                BLOCK_SIZE bsize, int use_rd, int sb_row) {
   if (use_rd) {
     // If projected rate is below the thresh_rate (well below target,
     // so undershoot expected), accept it for lower-qp coding.
-    if (cr->projected_rate_sb < cr->thresh_rate_sb)
+    if (cr->projected_rate_sb[sb_row] < cr->thresh_rate_sb)
       return 1;
     // Otherwise, reject the block for lower-qp coding if any of the following:
     // 1) prediction block size is below min_block_size
@@ -105,7 +111,7 @@ static int candidate_refresh_aq(const CYCLIC_REFRESH *cr,
     // another thresh_dist)
     else if (bsize < cr->min_block_size ||
              (mbmi->mv[0].as_int != 0 &&
-              cr->projected_dist_sb > cr->thresh_dist_sb) ||
+              cr->projected_dist_sb[sb_row] > cr->thresh_dist_sb) ||
              !is_inter_block(mbmi))
       return 0;
     else
@@ -125,21 +131,24 @@ static int candidate_refresh_aq(const CYCLIC_REFRESH *cr,
 // check if we should reset the segment_id, and update the cyclic_refresh map
 // and segmentation map.
 void vp9_cyclic_refresh_update_segment(VP9_COMP *const cpi,
-                                       MB_MODE_INFO *const mbmi,
+                                       MACROBLOCK *const x,
                                        int mi_row, int mi_col,
                                        BLOCK_SIZE bsize, int use_rd) {
   const VP9_COMMON *const cm = &cpi->common;
   CYCLIC_REFRESH *const cr = cpi->cyclic_refresh;
+  MB_MODE_INFO *const mbmi = &x->e_mbd.mi[0]->mbmi;
   const int bw = num_8x8_blocks_wide_lookup[bsize];
   const int bh = num_8x8_blocks_high_lookup[bsize];
   const int xmis = MIN(cm->mi_cols - mi_col, bw);
   const int ymis = MIN(cm->mi_rows - mi_row, bh);
   const int block_index = mi_row * cm->mi_cols + mi_col;
-  const int refresh_this_block = cpi->mb.in_static_area ||
-                                 candidate_refresh_aq(cr, mbmi, bsize, use_rd);
+  const int sb_row = mi_row >> MI_BLOCK_SIZE_LOG2;
+  const int refresh_this_block = x->in_static_area ||
+                                 candidate_refresh_aq(cr, mbmi, bsize, use_rd,
+                                                      sb_row);
   // Default is to not update the refresh map.
   int new_map_value = cr->map[block_index];
-  int x = 0; int y = 0;
+  int i = 0; int j = 0;
 
   // Check if we should reset the segment_id for this block.
   if (mbmi->segment_id > 0 && !refresh_this_block)
@@ -163,10 +172,10 @@ void vp9_cyclic_refresh_update_segment(VP9_COMP *const cpi,
   }
   // Update entries in the cyclic refresh map with new_map_value, and
   // copy mbmi->segment_id into global segmentation map.
-  for (y = 0; y < ymis; y++)
-    for (x = 0; x < xmis; x++) {
-      cr->map[block_index + y * cm->mi_cols + x] = new_map_value;
-      cpi->segmentation_map[block_index + y * cm->mi_cols + x] =
+  for (j = 0; j < ymis; j++)
+    for (i = 0; i < xmis; i++) {
+      cr->map[block_index + j * cm->mi_cols + i] = new_map_value;
+      cpi->segmentation_map[block_index + j * cm->mi_cols + i] =
           mbmi->segment_id;
     }
   // Keep track of actual number (in units of 8x8) of blocks in segment 1 used
@@ -314,9 +323,10 @@ void vp9_cyclic_refresh_setup(VP9_COMP *const cpi) {
 }
 
 void vp9_cyclic_refresh_set_rate_and_dist_sb(CYCLIC_REFRESH *cr,
-                                             int64_t rate_sb, int64_t dist_sb) {
-  cr->projected_rate_sb = rate_sb;
-  cr->projected_dist_sb = dist_sb;
+                                             int64_t rate_sb, int64_t dist_sb,
+                                             int sb_row) {
+  cr->projected_rate_sb[sb_row] = rate_sb;
+  cr->projected_dist_sb[sb_row] = dist_sb;
 }
 
 int vp9_cyclic_refresh_get_rdmult(const CYCLIC_REFRESH *cr) {

@@ -34,6 +34,15 @@ typedef struct {
   int in_use;
 } PRED_BUFFER;
 
+static void vp9_find_mv_refs_rt(const VP9_COMMON *cm, const MACROBLOCK *x,
+                                 const TileInfo *const tile,
+                                 MODE_INFO *mi, MV_REFERENCE_FRAME ref_frame,
+                                 int_mv *mv_ref_list,
+                                 int mi_row, int mi_col) {
+  find_mv_refs_idx(cm, &x->e_mbd, tile, mi, ref_frame, mv_ref_list, -1,
+                   mi_row, mi_col, x->data_parallel_processing);
+}
+
 static int mv_refs_rt(const VP9_COMMON *cm, const MACROBLOCKD *xd,
                       const TileInfo *const tile,
                       MODE_INFO *mi, MV_REFERENCE_FRAME ref_frame,
@@ -500,7 +509,7 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
     frame_mv[NEWMV][ref_frame].as_int = INVALID_MV;
     frame_mv[ZEROMV][ref_frame].as_int = 0;
 
-    if (!cm->data_parallel_processing) {
+    if (!x->data_parallel_processing) {
       if (xd->up_available)
         filter_ref = xd->mi[-xd->mi_stride]->mbmi.interp_filter;
       else if (xd->left_available)
@@ -514,9 +523,9 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
       vp9_setup_pred_block(xd, yv12_mb[ref_frame], yv12, mi_row, mi_col,
                            sf, sf);
 
-      if (!cm->error_resilient_mode || cm->data_parallel_processing)
-        vp9_find_mv_refs(cm, xd, tile, xd->mi[0], ref_frame,
-                         candidates, mi_row, mi_col);
+      if (!cm->error_resilient_mode || x->data_parallel_processing)
+        vp9_find_mv_refs_rt(cm, x, tile, xd->mi[0], ref_frame,
+                            candidates, mi_row, mi_col);
       else
         const_motion[ref_frame] = mv_refs_rt(cm, xd, tile, xd->mi[0],
                                              ref_frame, candidates,
@@ -527,7 +536,7 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
                             &frame_mv[NEARMV][ref_frame]);
 
       if (!vp9_is_scaled(sf) && bsize >= BLOCK_8X8 &&
-          (!cm->use_gpu || cm->data_parallel_processing))
+          (!cm->use_gpu || x->data_parallel_processing))
         vp9_mv_pred(cpi, x, yv12_mb[ref_frame][0].buf, yv12->y_stride,
                     ref_frame, bsize);
     } else {
@@ -547,7 +556,7 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
     // some of the algorithms to the GPU, we need make it data-parallel.
     // We have currently data parallelized ZEROMV and NEWMV computations.
     if (cm->use_gpu) {
-      if (cm->data_parallel_processing) {
+      if (x->data_parallel_processing) {
         start_mode = ZEROMV;
         end_mode = NEWMV;
       } else {
@@ -596,7 +605,7 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
           continue;
       }
 
-      if (!cm->data_parallel_processing &&
+      if (!x->data_parallel_processing &&
           this_mode != NEARESTMV &&
           frame_mv[this_mode][ref_frame].as_int ==
               frame_mv[NEARESTMV][ref_frame].as_int)
@@ -638,7 +647,7 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
           model_rd_for_sb_y(cpi, bsize, x, xd, &pf_rate[filter],
                             &pf_dist[filter], &pf_var[filter], &pf_sse[filter]);
           cost = RDCOST(x->rdmult, x->rddiv,
-                        vp9_get_switchable_rate(cpi) + pf_rate[filter],
+                        vp9_get_switchable_rate(cpi, x) + pf_rate[filter],
                         pf_dist[filter]);
           pf_tx_size[filter] = mbmi->tx_size;
           if (cost < best_cost) {
@@ -684,7 +693,7 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
 
       // Skipping checking: test to see if this block can be reconstructed by
       // prediction only.
-      if (!cm->data_parallel_processing &&
+      if (!x->data_parallel_processing &&
           cpi->allow_encode_breakout) {
         encode_breakout_test(cpi, x, bsize, mi_row, mi_col, ref_frame,
                              this_mode, var_y, sse_y, yv12_mb, &rate, &dist);
@@ -731,7 +740,7 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
       break;
   }
 
-  if (cm->data_parallel_processing) {
+  if (x->data_parallel_processing) {
     xd->gpu_mvinfo[bsize]->best_rd = best_rd;
     xd->gpu_mvinfo[bsize]->returnrate = *returnrate;
     xd->gpu_mvinfo[bsize]->returndistortion = *returndistortion;

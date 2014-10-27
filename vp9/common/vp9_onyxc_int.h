@@ -210,10 +210,6 @@ typedef struct VP9Common {
 
   int use_gpu;
 
-  // Indicates whether the current algorithm is processed in a data parallel
-  // manner
-  int data_parallel_processing;
-
   // Private data associated with the frame buffer callbacks.
   void *cb_priv;
   vpx_get_frame_buffer_cb_fn_t get_fb_cb;

@@ -204,6 +204,13 @@ static INLINE void clamp_mv2(MV *mv, const MACROBLOCKD *xd) {
                xd->mb_to_bottom_edge + RIGHT_BOTTOM_MARGIN);
 }
 
+void find_mv_refs_idx(const VP9_COMMON *cm, const MACROBLOCKD *xd,
+                      const TileInfo *const tile,
+                      MODE_INFO *mi, MV_REFERENCE_FRAME ref_frame,
+                      int_mv *mv_ref_list,
+                      int block, int mi_row, int mi_col,
+                      int data_parallel_processing);
+
 void vp9_find_mv_refs(const VP9_COMMON *cm, const MACROBLOCKD *xd,
                       const TileInfo *const tile,
                       MODE_INFO *mi, MV_REFERENCE_FRAME ref_frame,

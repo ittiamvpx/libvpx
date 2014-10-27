@@ -31,6 +31,8 @@ void vp9_setup_src_planes(struct macroblock *x,
                           const struct yv12_buffer_config *src,
                           int mi_row, int mi_col);
 
+int encoding_thread_process(thread_context *const thread_ctxt, void* data2);
+
 void vp9_encode_frame(struct VP9_COMP *cpi);
 
 #ifdef __cplusplus

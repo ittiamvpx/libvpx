@@ -16,6 +16,8 @@
 #include "vpx_ports/mem.h"
 #include "vp9/common/vp9_onyxc_int.h"
 
+#include "vp9/encoder/vp9_rd.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -85,6 +87,12 @@ struct macroblock {
   int *nmvsadcost_hp[2];
   int **mvsadcost;
 
+  // During pick partition analysis for faster speed presets, the Min and
+  // Max partition size to be analysed for an SB are is limited to fewer block
+  // sizes basing on neighbor blocks MODE_INFO and configured Speed features.
+  BLOCK_SIZE min_partition_size;
+  BLOCK_SIZE max_partition_size;
+
   // These define limits to motion vector components to prevent them
   // from extending outside the UMV borders
   int mv_col_min;
@@ -99,6 +107,21 @@ struct macroblock {
 
   // note that token_costs is the cost when eob node is skipped
   vp9_coeff_cost token_costs[TX_SIZES];
+
+  // Thread id
+  int thread_id;
+
+  // Entropy/rd stats for a set of rows encoded by an encoder thread are stored
+  // here. After encoding the complete frame, stats across all threads are
+  // combined for updating the probability tables and rd thresholds. In single
+  // core encoding these are directly copied to the destination.
+  FRAME_COUNTS counts;
+  vp9_coeff_count coef_counts[TX_SIZES][PLANE_TYPES];
+  RD_OPT rd;
+
+  // Indicates whether the current algorithm is processed in a data parallel
+  // manner
+  int data_parallel_processing;
 
   int in_static_area;
 

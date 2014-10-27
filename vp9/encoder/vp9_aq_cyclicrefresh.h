@@ -19,6 +19,7 @@ extern "C" {
 #endif
 
 struct VP9_COMP;
+struct macroblock;
 
 struct CYCLIC_REFRESH;
 typedef struct CYCLIC_REFRESH CYCLIC_REFRESH;
@@ -31,7 +32,7 @@ void vp9_cyclic_refresh_free(CYCLIC_REFRESH *cr);
 // check if we should reset the segment_id, and update the cyclic_refresh map
 // and segmentation map.
 void vp9_cyclic_refresh_update_segment(struct VP9_COMP *const cpi,
-                                       MB_MODE_INFO *const mbmi,
+                                       struct macroblock *const x,
                                        int mi_row, int mi_col,
                                        BLOCK_SIZE bsize, int use_rd);
 
@@ -39,7 +40,8 @@ void vp9_cyclic_refresh_update_segment(struct VP9_COMP *const cpi,
 void vp9_cyclic_refresh_setup(struct VP9_COMP *const cpi);
 
 void vp9_cyclic_refresh_set_rate_and_dist_sb(CYCLIC_REFRESH *cr,
-                                             int64_t rate_sb, int64_t dist_sb);
+                                             int64_t rate_sb, int64_t dist_sb,
+                                             int sb_row);
 
 int vp9_cyclic_refresh_get_rdmult(const CYCLIC_REFRESH *cr);
 

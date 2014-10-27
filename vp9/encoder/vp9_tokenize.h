@@ -36,6 +36,11 @@ typedef struct {
   uint8_t         skip_eob_node;
 } TOKENEXTRA;
 
+typedef struct {
+  TOKENEXTRA *start;
+  TOKENEXTRA *stop;
+} TOKENLIST;
+
 extern const vp9_tree_index vp9_coef_tree[];
 extern const vp9_tree_index vp9_coef_con_tree[];
 extern struct vp9_token vp9_coef_encodings[];
@@ -44,8 +49,8 @@ int vp9_is_skippable_in_plane(MACROBLOCK *x, BLOCK_SIZE bsize, int plane);
 
 struct VP9_COMP;
 
-void vp9_tokenize_sb(struct VP9_COMP *cpi, TOKENEXTRA **t, int dry_run,
-                     BLOCK_SIZE bsize);
+void vp9_tokenize_sb(struct VP9_COMP *cpi, MACROBLOCK *const x,
+                     TOKENEXTRA **t, int dry_run, BLOCK_SIZE bsize);
 
 extern const int16_t *vp9_dct_value_cost_ptr;
 /* TODO: The Token field should be broken out into a separate char array to

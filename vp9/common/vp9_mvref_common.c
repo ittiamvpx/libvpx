@@ -15,14 +15,15 @@
 // to try and find candidate reference vectors.
 // When data parallel processing is enabled, we use the previous frame's
 // MODE_INFO, to approximate the candidate reference vectors
-static void find_mv_refs_idx(const VP9_COMMON *cm, const MACROBLOCKD *xd,
-                             const TileInfo *const tile,
-                             MODE_INFO *mi, MV_REFERENCE_FRAME ref_frame,
-                             int_mv *mv_ref_list,
-                             int block, int mi_row, int mi_col) {
+void find_mv_refs_idx(const VP9_COMMON *cm, const MACROBLOCKD *xd,
+                      const TileInfo *const tile,
+                      MODE_INFO *mi, MV_REFERENCE_FRAME ref_frame,
+                      int_mv *mv_ref_list,
+                      int block, int mi_row, int mi_col,
+                      int data_parallel_processing) {
   const int *ref_sign_bias = cm->ref_frame_sign_bias;
   int i, refmv_count = 0;
-  MODE_INFO **const mi_grid = cm->data_parallel_processing
+  MODE_INFO **const mi_grid = data_parallel_processing
         ? &cm->prev_mi_grid_visible[mi_row * xd->mi_stride + mi_col]
         : xd->mi;
   const MODE_INFO *prev_mi = !cm->error_resilient_mode && cm->prev_mi
@@ -114,12 +115,12 @@ static void find_mv_refs_idx(const VP9_COMMON *cm, const MACROBLOCKD *xd,
 }
 
 void vp9_find_mv_refs(const VP9_COMMON *cm, const MACROBLOCKD *xd,
-                                    const TileInfo *const tile,
-                                    MODE_INFO *mi, MV_REFERENCE_FRAME ref_frame,
-                                    int_mv *mv_ref_list,
-                                    int mi_row, int mi_col) {
+                      const TileInfo *const tile,
+                      MODE_INFO *mi, MV_REFERENCE_FRAME ref_frame,
+                      int_mv *mv_ref_list,
+                      int mi_row, int mi_col) {
   find_mv_refs_idx(cm, xd, tile, mi, ref_frame, mv_ref_list, -1,
-                   mi_row, mi_col);
+                   mi_row, mi_col, 0);
 }
 
 static void lower_mv_precision(MV *mv, int allow_hp) {
@@ -157,7 +158,7 @@ void vp9_append_sub8x8_mvs_for_idx(VP9_COMMON *cm, MACROBLOCKD *xd,
   assert(MAX_MV_REF_CANDIDATES == 2);
 
   find_mv_refs_idx(cm, xd, tile, mi, mi->mbmi.ref_frame[ref], mv_list, block,
-                   mi_row, mi_col);
+                   mi_row, mi_col, 0);
 
   near->as_int = 0;
   switch (block) {

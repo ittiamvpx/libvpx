@@ -29,6 +29,8 @@ void vp9_tile_init(TileInfo *tile, const struct VP9Common *cm,
 
 void vp9_tile_set_row(TileInfo *tile, const struct VP9Common *cm, int row);
 void vp9_tile_set_col(TileInfo *tile, const struct VP9Common *cm, int col);
+int vp9_get_tile_row_index(TileInfo *tile, const struct VP9Common *cm,
+                           int mi_row);
 
 void vp9_get_tile_n_bits(int mi_cols,
                          int *min_log2_tile_cols, int *max_log2_tile_cols);

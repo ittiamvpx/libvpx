@@ -63,7 +63,7 @@ void vp9_high_quantize_dc_32x32(const tran_low_t *coeff_ptr, int skip_block,
 struct VP9_COMP;
 struct VP9Common;
 
-void vp9_frame_init_quantizer(struct VP9_COMP *cpi);
+void vp9_frame_init_quantizer(struct VP9_COMP *cpi, MACROBLOCK *x);
 
 void vp9_update_zbin_extra(struct VP9_COMP *cpi, MACROBLOCK *x);
 

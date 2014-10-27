@@ -997,12 +997,12 @@ static int64_t rd_sbuv_dcpred(const VP9_COMP *cpi, MACROBLOCK *x,
   return RDCOST(x->rdmult, x->rddiv, *rate, *distortion);
 }
 
-static void choose_intra_uv_mode(VP9_COMP *cpi, PICK_MODE_CONTEXT *ctx,
+static void choose_intra_uv_mode(VP9_COMP *cpi, MACROBLOCK *const x,
+                                 PICK_MODE_CONTEXT *ctx,
                                  BLOCK_SIZE bsize, TX_SIZE max_tx_size,
                                  int *rate_uv, int *rate_uv_tokenonly,
                                  int64_t *dist_uv, int *skip_uv,
                                  PREDICTION_MODE *mode_uv) {
-  MACROBLOCK *const x = &cpi->mb;
 
   // Use an estimated rd for uv_intra based on DC_PRED if the
   // appropriate speed flag is set.
@@ -2136,7 +2136,7 @@ static int64_t handle_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
                                  int64_t *psse,
                                  const int64_t ref_best_rd) {
   VP9_COMMON *cm = &cpi->common;
-  RD_OPT *rd_opt = &cpi->rd;
+  RD_OPT *rd_opt = &x->rd;
   MACROBLOCKD *xd = &x->e_mbd;
   MB_MODE_INFO *mbmi = &xd->mi[0]->mbmi;
   const int is_comp_pred = has_second_ref(mbmi);
@@ -2274,7 +2274,7 @@ static int64_t handle_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
         int j;
         int64_t rs_rd;
         mbmi->interp_filter = i;
-        rs = vp9_get_switchable_rate(cpi);
+        rs = vp9_get_switchable_rate(cpi, x);
         rs_rd = RDCOST(x->rdmult, x->rddiv, rs, 0);
 
         if (i > 0 && intpel_mv) {
@@ -2354,7 +2354,7 @@ static int64_t handle_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
   // Set the appropriate filter
   mbmi->interp_filter = cm->interp_filter != SWITCHABLE ?
       cm->interp_filter : best_filter;
-  rs = cm->interp_filter == SWITCHABLE ? vp9_get_switchable_rate(cpi) : 0;
+  rs = cm->interp_filter == SWITCHABLE ? vp9_get_switchable_rate(cpi, x) : 0;
 
   if (pred_exists) {
     if (best_needs_copy) {
@@ -2547,7 +2547,7 @@ int64_t vp9_rd_pick_inter_mode_sb(VP9_COMP *cpi, MACROBLOCK *x,
                                   PICK_MODE_CONTEXT *ctx,
                                   int64_t best_rd_so_far) {
   VP9_COMMON *const cm = &cpi->common;
-  RD_OPT *const rd_opt = &cpi->rd;
+  RD_OPT *const rd_opt = &x->rd;
   MACROBLOCKD *const xd = &x->e_mbd;
   MB_MODE_INFO *const mbmi = &xd->mi[0]->mbmi;
   const struct segmentation *const seg = &cm->seg;
@@ -2588,8 +2588,8 @@ int64_t vp9_rd_pick_inter_mode_sb(VP9_COMP *cpi, MACROBLOCK *x,
   uint8_t ref_frame_skip_mask[2] = { 0 };
   uint16_t mode_skip_mask[MAX_REF_FRAMES] = { 0 };
   int mode_skip_start = cpi->sf.mode_skip_start + 1;
-  const int *const rd_threshes = rd_opt->threshes[segment_id][bsize];
-  const int *const rd_thresh_freq_fact = rd_opt->thresh_freq_fact[bsize];
+  const int *const rd_threshes = cpi->rd.threshes[segment_id][bsize];
+  const int *const rd_thresh_freq_fact = cpi->rd.thresh_freq_fact[bsize];
   const int mode_search_skip_flags = cpi->sf.mode_search_skip_flags;
   vp9_zero(best_mbmode);
   x->skip_encode = cpi->sf.skip_encode_frame && x->q_index < QIDX_SKIP_THRESH;
@@ -2880,7 +2880,7 @@ int64_t vp9_rd_pick_inter_mode_sb(VP9_COMP *cpi, MACROBLOCK *x,
       uv_tx = get_uv_tx_size_impl(mbmi->tx_size, bsize, pd[1].subsampling_x,
                                   pd[1].subsampling_y);
       if (rate_uv_intra[uv_tx] == INT_MAX) {
-        choose_intra_uv_mode(cpi, ctx, bsize, uv_tx,
+        choose_intra_uv_mode(cpi, x, ctx, bsize, uv_tx,
                              &rate_uv_intra[uv_tx], &rate_uv_tokenonly[uv_tx],
                              &dist_uv[uv_tx], &skip_uv[uv_tx], &mode_uv[uv_tx]);
       }
@@ -3106,8 +3106,15 @@ int64_t vp9_rd_pick_inter_mode_sb(VP9_COMP *cpi, MACROBLOCK *x,
       best_mbmode.mode = ZEROMV;
   }
 
-  if (best_mode_index < 0 || best_rd >= best_rd_so_far)
+  if (best_mode_index < 0 || best_rd >= best_rd_so_far) {
+    // If adaptive_pred_interp_filter is enabled, the sub 8x8 modes use the
+    // mbmi interp filter info in the pc_leaf context of 8x8 block. So preserve
+    // this data  before returning
+    // TODO (ram-ittiam): Reposition this init at an appropriate place.
+    if (bsize == BLOCK_8X8)
+      ctx->mic = *xd->mi[0];
     return INT64_MAX;
+  }
 
   // If we used an estimate for the uv intra rd in the loop above...
   if (cpi->sf.use_uv_intra_rd_estimate) {
@@ -3179,7 +3186,7 @@ int64_t vp9_rd_pick_inter_mode_sb_seg_skip(VP9_COMP *cpi, MACROBLOCK *x,
                                            PICK_MODE_CONTEXT *ctx,
                                            int64_t best_rd_so_far) {
   VP9_COMMON *const cm = &cpi->common;
-  RD_OPT *const rd_opt = &cpi->rd;
+  RD_OPT *const rd_opt = &x->rd;
   MACROBLOCKD *const xd = &x->e_mbd;
   MB_MODE_INFO *const mbmi = &xd->mi[0]->mbmi;
   unsigned char segment_id = mbmi->segment_id;
@@ -3230,7 +3237,7 @@ int64_t vp9_rd_pick_inter_mode_sb_seg_skip(VP9_COMP *cpi, MACROBLOCK *x,
       int best_rs = INT_MAX;
       for (i = 0; i < SWITCHABLE_FILTERS; ++i) {
         mbmi->interp_filter = i;
-        rs = vp9_get_switchable_rate(cpi);
+        rs = vp9_get_switchable_rate(cpi, x);
         if (rs < best_rs) {
           best_rs = rs;
           best_filter = mbmi->interp_filter;
@@ -3241,7 +3248,7 @@ int64_t vp9_rd_pick_inter_mode_sb_seg_skip(VP9_COMP *cpi, MACROBLOCK *x,
   // Set the appropriate filter
   if (cm->interp_filter == SWITCHABLE) {
     mbmi->interp_filter = best_filter;
-    rate2 += vp9_get_switchable_rate(cpi);
+    rate2 += vp9_get_switchable_rate(cpi, x);
   } else {
     mbmi->interp_filter = cm->interp_filter;
   }
@@ -3286,7 +3293,7 @@ int64_t vp9_rd_pick_inter_mode_sub8x8(VP9_COMP *cpi, MACROBLOCK *x,
                                       PICK_MODE_CONTEXT *ctx,
                                       int64_t best_rd_so_far) {
   VP9_COMMON *const cm = &cpi->common;
-  RD_OPT *const rd_opt = &cpi->rd;
+  RD_OPT *const rd_opt = &x->rd;
   MACROBLOCKD *const xd = &x->e_mbd;
   MB_MODE_INFO *const mbmi = &xd->mi[0]->mbmi;
   const struct segmentation *const seg = &cm->seg;
@@ -3403,8 +3410,8 @@ int64_t vp9_rd_pick_inter_mode_sub8x8(VP9_COMP *cpi, MACROBLOCK *x,
 
     // Test best rd so far against threshold for trying this mode.
     if (rd_less_than_thresh(best_rd,
-                            rd_opt->threshes[segment_id][bsize][ref_index],
-                            rd_opt->thresh_freq_fact[bsize][ref_index]))
+                            cpi->rd.threshes[segment_id][bsize][ref_index],
+                            cpi->rd.thresh_freq_fact[bsize][ref_index]))
       continue;
 
     comp_pred = second_ref_frame > INTRA_FRAME;
@@ -3483,7 +3490,7 @@ int64_t vp9_rd_pick_inter_mode_sub8x8(VP9_COMP *cpi, MACROBLOCK *x,
       distortion2 += distortion_y;
 
       if (rate_uv_intra == INT_MAX) {
-        choose_intra_uv_mode(cpi, ctx, bsize, TX_4X4,
+        choose_intra_uv_mode(cpi, x, ctx, bsize, TX_4X4,
                              &rate_uv_intra,
                              &rate_uv_tokenonly,
                              &dist_uv, &skip_uv,
@@ -3512,10 +3519,10 @@ int64_t vp9_rd_pick_inter_mode_sub8x8(VP9_COMP *cpi, MACROBLOCK *x,
       int uv_skippable;
 
       this_rd_thresh = (ref_frame == LAST_FRAME) ?
-          rd_opt->threshes[segment_id][bsize][THR_LAST] :
-          rd_opt->threshes[segment_id][bsize][THR_ALTR];
+          cpi->rd.threshes[segment_id][bsize][THR_LAST] :
+          cpi->rd.threshes[segment_id][bsize][THR_ALTR];
       this_rd_thresh = (ref_frame == GOLDEN_FRAME) ?
-      rd_opt->threshes[segment_id][bsize][THR_GOLD] : this_rd_thresh;
+          cpi->rd.threshes[segment_id][bsize][THR_GOLD] : this_rd_thresh;
       rd_opt->mask_filter = 0;
       for (i = 0; i < SWITCHABLE_FILTER_CONTEXTS; ++i)
         rd_opt->filter_cache[i] = INT64_MAX;
@@ -3548,7 +3555,7 @@ int64_t vp9_rd_pick_inter_mode_sub8x8(VP9_COMP *cpi, MACROBLOCK *x,
 
             if (tmp_rd == INT64_MAX)
               continue;
-            rs = vp9_get_switchable_rate(cpi);
+            rs = vp9_get_switchable_rate(cpi, x);
             rs_rd = RDCOST(x->rdmult, x->rddiv, rs, 0);
             rd_opt->filter_cache[switchable_filter_index] = tmp_rd;
             rd_opt->filter_cache[SWITCHABLE_FILTERS] =
@@ -3626,7 +3633,7 @@ int64_t vp9_rd_pick_inter_mode_sub8x8(VP9_COMP *cpi, MACROBLOCK *x,
       distortion2 += distortion;
 
       if (cm->interp_filter == SWITCHABLE)
-        rate2 += vp9_get_switchable_rate(cpi);
+        rate2 += vp9_get_switchable_rate(cpi, x);
 
       if (!mode_excluded)
         mode_excluded = comp_pred ? cm->reference_mode == SINGLE_REFERENCE

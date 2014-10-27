@@ -22,6 +22,7 @@
 #include "vp9/common/vp9_entropy.h"
 #include "vp9/common/vp9_entropymode.h"
 #include "vp9/common/vp9_onyxc_int.h"
+#include "vp9/common/vp9_thread.h"
 
 #include "vp9/encoder/vp9_aq_cyclicrefresh.h"
 #include "vp9/encoder/vp9_context_tree.h"
@@ -40,6 +41,7 @@
 #if CONFIG_VP9_TEMPORAL_DENOISING
 #include "vp9/encoder/vp9_denoiser.h"
 #endif
+#include "vp9/encoder/vp9_ethread.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -188,6 +190,8 @@ typedef struct VP9EncoderConfig {
   // these parameters aren't to be used in final build don't use!!!
   int play_alternate;
 
+  int threads;  // number of encoding threads
+
   int encode_breakout;  // early breakout : for video conf recommend 800
 
   /* Bitfield defining the error resiliency features to enable.
@@ -264,8 +268,14 @@ typedef struct VP9_COMP {
 
   YV12_BUFFER_CONFIG last_frame_uf;
 
+  // The tokens resulted while encoding a frame are stored in the frame buffer
+  // pointed by "*tok"
   TOKENEXTRA *tok;
-  unsigned int tok_count[4][1 << 6];
+
+  // tplist[sb_row][tile_row][tile_col], represents the start and end points of
+  // the region where the tokens resulted while encoding the sb_row are stored
+  // in the buffer "*tok".
+  TOKENLIST (*tplist)[4][1 << 6];
 
   // Ambient reconstruction err target for force key frames
   int ambient_err;
@@ -319,6 +329,17 @@ typedef struct VP9_COMP {
   unsigned char *complexity_map;
 
   CYCLIC_REFRESH *cyclic_refresh;
+
+  // encoder thread handle
+  VP9Worker *enc_thread_hndl;
+  int max_threads;
+  int b_multi_threaded;
+
+  // Allocate memory to store the encoded superblock index in each row.
+  int *cur_sb_col;
+
+  // minimum spatial distance (in SB) between encoding threads
+  int sync_range;
 
   fractional_mv_step_fp *find_fractional_mv_step;
   vp9_full_search_fn_t full_search_sad;
@@ -401,7 +422,7 @@ typedef struct VP9_COMP {
 
   PICK_MODE_CONTEXT *leaf_tree;
   PC_TREE *pc_tree;
-  PC_TREE *pc_root;
+  PC_TREE **pc_root;
   int partition_cost[PARTITION_CONTEXTS][PARTITION_TYPES];
 
   int multi_arf_allowed;

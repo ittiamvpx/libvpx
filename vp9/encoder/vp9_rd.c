@@ -192,27 +192,27 @@ static int compute_rd_thresh_factor(int qindex, vpx_bit_depth_t bit_depth) {
   return MAX((int)(pow(q, RD_THRESH_POW) * 5.12), 8);
 }
 
-void vp9_initialize_me_consts(VP9_COMP *cpi, int qindex) {
+void vp9_initialize_me_consts(MACROBLOCK *x, int qindex) {
 #if CONFIG_VP9_HIGHBITDEPTH
   switch (cpi->common.bit_depth) {
     case VPX_BITS_8:
-      cpi->mb.sadperbit16 = sad_per_bit16lut_8[qindex];
-      cpi->mb.sadperbit4 = sad_per_bit4lut_8[qindex];
+      x->sadperbit16 = sad_per_bit16lut_8[qindex];
+      x->sadperbit4 = sad_per_bit4lut_8[qindex];
       break;
     case VPX_BITS_10:
-      cpi->mb.sadperbit16 = sad_per_bit16lut_10[qindex];
-      cpi->mb.sadperbit4 = sad_per_bit4lut_10[qindex];
+      x->sadperbit16 = sad_per_bit16lut_10[qindex];
+      x->sadperbit4 = sad_per_bit4lut_10[qindex];
       break;
     case VPX_BITS_12:
-      cpi->mb.sadperbit16 = sad_per_bit16lut_12[qindex];
-      cpi->mb.sadperbit4 = sad_per_bit4lut_12[qindex];
+      x->sadperbit16 = sad_per_bit16lut_12[qindex];
+      x->sadperbit4 = sad_per_bit4lut_12[qindex];
       break;
     default:
       assert(0 && "bit_depth should be VPX_BITS_8, VPX_BITS_10 or VPX_BITS_12");
   }
 #else
-  cpi->mb.sadperbit16 = sad_per_bit16lut_8[qindex];
-  cpi->mb.sadperbit4 = sad_per_bit4lut_8[qindex];
+  x->sadperbit16 = sad_per_bit16lut_8[qindex];
+  x->sadperbit4 = sad_per_bit4lut_8[qindex];
 #endif
 }
 
@@ -446,7 +446,7 @@ void vp9_mv_pred(VP9_COMP *cpi, MACROBLOCK *x,
   uint8_t *ref_y_ptr;
   const int num_mv_refs = MAX_MV_REF_CANDIDATES +
                     (cpi->sf.adaptive_motion_search &&
-                     block_size < cpi->sf.max_partition_size);
+                     block_size < x->max_partition_size);
 
   MV pred_mv[3];
   pred_mv[0] = mbmi->ref_mvs[ref_frame][0].as_mv;
@@ -512,12 +512,10 @@ const YV12_BUFFER_CONFIG *vp9_get_scaled_ref_frame(const VP9_COMP *cpi,
   return (scaled_idx != ref_idx) ? &cm->frame_bufs[scaled_idx].buf : NULL;
 }
 
-int vp9_get_switchable_rate(const VP9_COMP *cpi) {
-  const VP9_COMMON *const cm = &cpi->common;
-  const MACROBLOCKD *const xd = &cpi->mb.e_mbd;
-  const MB_MODE_INFO *const mbmi = &xd->mi[0]->mbmi;
-  const int ctx = cm->data_parallel_processing ?
-      SWITCHABLE_FILTERS : vp9_get_pred_context_switchable_interp(xd);
+int vp9_get_switchable_rate(const VP9_COMP *cpi, const MACROBLOCK *const x) {
+  const MB_MODE_INFO *const mbmi = &x->e_mbd.mi[0]->mbmi;
+  const int ctx = x->data_parallel_processing ?
+      SWITCHABLE_FILTERS : vp9_get_pred_context_switchable_interp(&x->e_mbd);
   return SWITCHABLE_INTERP_RATE_FACTOR *
              cpi->switchable_interp_costs[ctx][mbmi->interp_filter];
 }

@@ -241,7 +241,7 @@ static void inc_mvs(const MB_MODE_INFO *mbmi, const int_mv mvs[2],
   }
 }
 
-void vp9_update_mv_count(VP9_COMMON *cm, const MACROBLOCKD *xd) {
+void vp9_update_mv_count(FRAME_COUNTS *counts, const MACROBLOCKD *xd) {
   const MODE_INFO *mi = xd->mi[0];
   const MB_MODE_INFO *const mbmi = &mi->mbmi;
 
@@ -254,12 +254,12 @@ void vp9_update_mv_count(VP9_COMMON *cm, const MACROBLOCKD *xd) {
       for (idx = 0; idx < 2; idx += num_4x4_w) {
         const int i = idy * 2 + idx;
         if (mi->bmi[i].as_mode == NEWMV)
-          inc_mvs(mbmi, mi->bmi[i].as_mv, &cm->counts.mv);
+          inc_mvs(mbmi, mi->bmi[i].as_mv, &counts->mv);
       }
     }
   } else {
     if (mbmi->mode == NEWMV)
-      inc_mvs(mbmi, mbmi->mv, &cm->counts.mv);
+      inc_mvs(mbmi, mbmi->mv, &counts->mv);
   }
 }
 

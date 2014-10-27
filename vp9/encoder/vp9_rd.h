@@ -15,7 +15,6 @@
 
 #include "vp9/common/vp9_blockd.h"
 
-#include "vp9/encoder/vp9_block.h"
 #include "vp9/encoder/vp9_context_tree.h"
 
 #ifdef __cplusplus
@@ -116,18 +115,20 @@ typedef struct RD_OPT {
 struct TileInfo;
 struct VP9_COMP;
 struct macroblock;
+struct macroblockd;
 
 int vp9_compute_rd_mult(const struct VP9_COMP *cpi, int qindex);
 
 void vp9_initialize_rd_consts(struct VP9_COMP *cpi);
 
-void vp9_initialize_me_consts(struct VP9_COMP *cpi, int qindex);
+void vp9_initialize_me_consts(struct macroblock *x, int qindex);
 
 void vp9_model_rd_from_var_lapndz(unsigned int var, unsigned int n,
                                   unsigned int qstep, int *rate,
                                   int64_t *dist);
 
-int vp9_get_switchable_rate(const struct VP9_COMP *cpi);
+int vp9_get_switchable_rate(const struct VP9_COMP *cpi,
+                            const struct macroblock *const x);
 
 const YV12_BUFFER_CONFIG *vp9_get_scaled_ref_frame(const struct VP9_COMP *cpi,
                                                    int ref_frame);
@@ -148,11 +149,11 @@ static INLINE int rd_less_than_thresh(int64_t best_rd, int thresh,
     return best_rd < ((int64_t)thresh * thresh_fact >> 5) || thresh == INT_MAX;
 }
 
-void vp9_mv_pred(struct VP9_COMP *cpi, MACROBLOCK *x,
+void vp9_mv_pred(struct VP9_COMP *cpi, struct macroblock *x,
                  uint8_t *ref_y_buffer, int ref_y_stride,
                  int ref_frame, BLOCK_SIZE block_size);
 
-void vp9_setup_pred_block(const MACROBLOCKD *xd,
+void vp9_setup_pred_block(const struct macroblockd *xd,
                           struct buf_2d dst[MAX_MB_PLANE],
                           const YV12_BUFFER_CONFIG *src,
                           int mi_row, int mi_col,

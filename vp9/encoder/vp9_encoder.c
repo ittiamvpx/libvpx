@@ -207,6 +207,9 @@ static void dealloc_compressor_data(VP9_COMP *cpi) {
   vpx_free(cpi->tok);
   cpi->tok = 0;
 
+  vpx_free(cpi->tplist);
+  cpi->tplist = NULL;
+
   vp9_free_pc_tree(cpi);
 
   for (i = 0; i < cpi->svc.number_spatial_layers; ++i) {
@@ -219,6 +222,18 @@ static void dealloc_compressor_data(VP9_COMP *cpi) {
   if (cpi->source_diff_var != NULL) {
     vpx_free(cpi->source_diff_var);
     cpi->source_diff_var = NULL;
+  }
+
+  // Delete memory associated with threads
+  if (cpi->b_multi_threaded) {
+    for (i = 0; i < cpi->max_threads; ++i) {
+      VP9Worker *const worker = &cpi->enc_thread_hndl[i];
+      vp9_get_worker_interface()->end(worker);
+      vpx_free(worker->data1);
+      vpx_free(worker->data2);
+    }
+    vpx_free(cpi->enc_thread_hndl);
+    vpx_free(cpi->cur_sb_col);
   }
 
   for (i = 0; i < MAX_LAG_BUFFERS; ++i) {
@@ -504,6 +519,13 @@ void vp9_alloc_compressor_data(VP9_COMP *cpi) {
     CHECK_MEM_ERROR(cm, cpi->tok, vpx_calloc(tokens, sizeof(*cpi->tok)));
   }
 
+  vpx_free(cpi->tplist);
+  CHECK_MEM_ERROR(cm, cpi->tplist,
+                  vpx_calloc(cm->sb_rows, sizeof(*cpi->tplist)));
+
+  // don't create more threads than rows available
+  cpi->max_threads = MIN(cpi->max_threads, cm->sb_rows);
+
   vp9_setup_pc_tree(&cpi->common, cpi);
 }
 
@@ -565,6 +587,16 @@ static void init_config(struct VP9_COMP *cpi, VP9EncoderConfig *oxcf) {
 
   cm->width = oxcf->width;
   cm->height = oxcf->height;
+
+  // by default, single thread
+  cpi->max_threads = 1;
+  cpi->mb.thread_id = 0;
+#if CONFIG_MULTITHREAD
+  if (cpi->oxcf.threads) {
+    assert(cpi->oxcf.threads > 0);
+    cpi->max_threads = cpi->oxcf.threads;
+  }
+#endif
 
   // TODO(ram-ittiam): Basic sanity checks should be added for setting 'use_gpu'
   // flag. For example, when the current frame's resolution is different from

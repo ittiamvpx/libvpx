@@ -670,7 +670,7 @@ void vp9_init_plane_quantizers(VP9_COMP *cpi, MACROBLOCK *x) {
   x->errorperbit = rdmult >> 6;
   x->errorperbit += (x->errorperbit == 0);
 
-  vp9_initialize_me_consts(cpi, x->q_index);
+  vp9_initialize_me_consts(x, x->q_index);
 }
 
 void vp9_update_zbin_extra(VP9_COMP *cpi, MACROBLOCK *x) {
@@ -685,9 +685,9 @@ void vp9_update_zbin_extra(VP9_COMP *cpi, MACROBLOCK *x) {
   x->plane[2].zbin_extra = (int16_t)uv_zbin_extra;
 }
 
-void vp9_frame_init_quantizer(VP9_COMP *cpi) {
+void vp9_frame_init_quantizer(VP9_COMP *cpi, MACROBLOCK *x) {
   cpi->zbin_mode_boost = 0;
-  vp9_init_plane_quantizers(cpi, &cpi->mb);
+  vp9_init_plane_quantizers(cpi, x);
 }
 
 void vp9_set_quantizer(VP9_COMMON *cm, int q) {

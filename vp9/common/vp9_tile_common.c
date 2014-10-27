@@ -26,6 +26,20 @@ void vp9_tile_set_row(TileInfo *tile, const VP9_COMMON *cm, int row) {
   tile->mi_row_end = get_tile_offset(row + 1, cm->mi_rows, cm->log2_tile_rows);
 }
 
+int vp9_get_tile_row_index(TileInfo *tile, const VP9_COMMON *cm, int mi_row) {
+  const int tile_rows = 1 << cm->log2_tile_rows;
+  int tile_row;
+
+  for (tile_row = 0; tile_row < tile_rows; ++tile_row) {
+    vp9_tile_set_row(tile, cm, tile_row);
+    if (mi_row >= tile->mi_row_start && mi_row < tile->mi_row_end) {
+      break;
+    }
+  }
+  assert(tile_row < tile_rows);
+  return tile_row;
+}
+
 void vp9_tile_set_col(TileInfo *tile, const VP9_COMMON *cm, int col) {
   tile->mi_col_start = get_tile_offset(col, cm->mi_cols, cm->log2_tile_cols);
   tile->mi_col_end = get_tile_offset(col + 1, cm->mi_cols, cm->log2_tile_cols);
