@@ -37,21 +37,21 @@ struct VP9_COMP;
 struct macroblock;
 
 #define ADD_UP_1D_ARRAYS(op1, op2, col) {\
-  register int a;\
+  int a;\
   for (a = 0; a < col; ++a) {\
     op1[a] += op2[a];\
   }\
 }
 
 #define ADD_UP_2D_ARRAYS(op1, op2, row, col) {\
-  register int b;\
+  int b;\
   for (b = 0; b < row; ++b) {\
     ADD_UP_1D_ARRAYS(op1[b], op2[b], col);\
   }\
 }
 
 #define ADD_UP_3D_ARRAYS(op1, op2, level, row, col) {\
-  register int c;\
+  int c;\
   for (c = 0; c < level; ++c) {\
     ADD_UP_2D_ARRAYS(op1[c], op2[c], row, col);\
   }\
