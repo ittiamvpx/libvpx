@@ -225,7 +225,7 @@ static void dealloc_compressor_data(VP9_COMP *cpi) {
   }
 
   // Delete memory associated with threads
-  if (cpi->b_multi_threaded) {
+  if (cpi->max_threads > 1) {
     for (i = 0; i < cpi->max_threads; ++i) {
       VP9Worker *const worker = &cpi->enc_thread_hndl[i];
       vp9_get_worker_interface()->end(worker);
@@ -1032,6 +1032,12 @@ VP9_COMP *vp9_create_compressor(VP9EncoderConfig *oxcf) {
     for (j = 0; j < MAX_MODES; ++j)
       cpi->rd.thresh_freq_fact[i][j] = 32;
   }
+  vpx_memcpy(cpi->mb.rd.thresh_freq_fact, cpi->rd.thresh_freq_fact,
+             sizeof(cpi->rd.thresh_freq_fact));
+
+  // allocate space for encoder thread handles and create threads
+  if (cpi->max_threads > 1)
+    vp9_create_encoding_threads(cpi);
 
 #define BFP(BT, SDF, SDAF, VF, SVF, SVAF, SDX3F, SDX8F, SDX4DF)\
     cpi->fn_ptr[BT].sdf            = SDF; \

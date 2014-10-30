@@ -2501,7 +2501,7 @@ static void encode_rd_sb_row(VP9_COMP *cpi, MACROBLOCK *const x,
 
     // In multi-threading, before encoding the current SB, make sure the
     // necessary dependencies to encode the current SB are met.
-    if (cpi->b_multi_threaded) {
+    if (cpi->max_threads > 1) {
       const int sb_row = mi_row >> MI_BLOCK_SIZE_LOG2;
       const int sb_col = mi_col >> MI_BLOCK_SIZE_LOG2;
 
@@ -2614,7 +2614,7 @@ static void encode_rd_sb_row(VP9_COMP *cpi, MACROBLOCK *const x,
 
     // In multi-threading, after encoding the SB, make sure this is updated
     // in the cur_sb_col count
-    if (cpi->b_multi_threaded) {
+    if (cpi->max_threads > 1) {
       const int sb_row = mi_row >> MI_BLOCK_SIZE_LOG2;
       vp9_enc_sync_write(cpi, sb_row);
     }
@@ -3322,7 +3322,7 @@ static void encode_nonrd_sb_row(VP9_COMP *cpi, MACROBLOCK *const x,
 
     // In multi-threading, before encoding the current SB, make sure the
     // necessary dependencies to encode the current SB are met.
-    if (cpi->b_multi_threaded &&
+    if (cpi->max_threads > 1 &&
         !x->data_parallel_processing) {
       const int sb_row = mi_row >> MI_BLOCK_SIZE_LOG2;
       const int sb_col = mi_col >> MI_BLOCK_SIZE_LOG2;
@@ -3366,7 +3366,8 @@ static void encode_nonrd_sb_row(VP9_COMP *cpi, MACROBLOCK *const x,
         // When GPU is enabled, the 'is_background' result is computed and
         // stored during the data parallel processing.
         if (x->data_parallel_processing || !cm->use_gpu) {
-          x->in_static_area = is_background(cpi, tile, mi_row, mi_col);
+          if (!sf->partition_check)
+            x->in_static_area = is_background(cpi, tile, mi_row, mi_col);
           if(cm->use_gpu) {
             const int sb_index = get_sb_index(cm, mi_row, mi_col);
             cm->is_background_map[sb_index] = x->in_static_area;
@@ -3403,7 +3404,7 @@ static void encode_nonrd_sb_row(VP9_COMP *cpi, MACROBLOCK *const x,
     }
     // In multi-threading, after encoding the SB, make sure this is updated
     // in the cur_sb_col count
-    if (cpi->b_multi_threaded &&
+    if (cpi->max_threads > 1 &&
         !x->data_parallel_processing) {
       const int sb_row = mi_row >> MI_BLOCK_SIZE_LOG2;
       vp9_enc_sync_write(cpi, sb_row);
@@ -3594,11 +3595,7 @@ void encode_tiles_mt(VP9_COMP *cpi) {
   const VP9WorkerInterface *const winterface = vp9_get_worker_interface();
   int thread_id;
 
-  // allocate space for encoder thread handles and create threads
-  if (cpi->b_multi_threaded == 0)
-    vp9_create_encoding_threads(cpi);
-
-  for (thread_id = 0; thread_id < cpi->max_threads; ++thread_id) {
+  for (thread_id = 0; thread_id < cpi->max_threads ; ++thread_id) {
     VP9Worker *const worker = &cpi->enc_thread_hndl[thread_id];
     thread_context *const thread_ctxt = (thread_context *)worker->data1;
 
@@ -3654,7 +3651,7 @@ int encoding_thread_process(thread_context *const thread_ctxt, void* data2) {
 
   (void)data2;
   // initialize mb in thread context
-  thread_ctxt->mb = cpi->mb;
+  vp9_mb_copy(cpi, &thread_ctxt->mb, &cpi->mb);
   x->thread_id = thread_ctxt->thread_id;
   if (sf->use_nonrd_pick_mode) {
     // Initialize internal buffer pointers for rtc coding, where non-RD
@@ -3670,6 +3667,7 @@ int encoding_thread_process(thread_context *const thread_ctxt, void* data2) {
       pd[i].dqcoeff = ctx->dqcoeff_pbuf[i][0];
       p[i].eobs = ctx->eobs_pbuf[i][0];
     }
+    vp9_zero(x->zcoeff_blk);
   }
   // Call the Data parallel MV compute (to be performed by GPU)
   if (cm->use_gpu &&
@@ -3813,8 +3811,7 @@ static void encode_frame_internal(VP9_COMP *cpi) {
     }
 #endif
 
-    if (cpi->max_threads > 1 &&
-        (sf->use_nonrd_pick_mode == 1 || sf->adaptive_rd_thresh == 0)) {
+    if (cpi->max_threads > 1) {
       encode_tiles_mt(cpi);
     } else {
       encode_tiles(cpi);

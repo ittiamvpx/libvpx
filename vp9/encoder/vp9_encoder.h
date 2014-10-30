@@ -333,7 +333,6 @@ typedef struct VP9_COMP {
   // encoder thread handle
   VP9Worker *enc_thread_hndl;
   int max_threads;
-  int b_multi_threaded;
 
   // Allocate memory to store the encoded superblock index in each row.
   int *cur_sb_col;

@@ -2520,13 +2520,13 @@ void vp9_rd_pick_intra_mode_sb(VP9_COMP *cpi, MACROBLOCK *x,
 // choice for the current partition. It may well be better to keep a scaled
 // best rd so far value and update rd_thresh_freq_fact based on the mode/size
 // combination that wins out.
-static void update_rd_thresh_fact(VP9_COMP *cpi, int bsize,
-                                  int best_mode_index) {
+static void update_rd_thresh_fact(VP9_COMP *cpi, RD_OPT *const rd_opt,
+                                  int bsize, int best_mode_index) {
   if (cpi->sf.adaptive_rd_thresh > 0) {
     const int top_mode = bsize < BLOCK_8X8 ? MAX_REFS : MAX_MODES;
     int mode;
     for (mode = 0; mode < top_mode; ++mode) {
-      int *const fact = &cpi->rd.thresh_freq_fact[bsize][mode];
+      int *const fact = &rd_opt->thresh_freq_fact[bsize][mode];
 
       if (mode == best_mode_index) {
         *fact -= (*fact >> 3);
@@ -2589,7 +2589,7 @@ int64_t vp9_rd_pick_inter_mode_sb(VP9_COMP *cpi, MACROBLOCK *x,
   uint16_t mode_skip_mask[MAX_REF_FRAMES] = { 0 };
   int mode_skip_start = cpi->sf.mode_skip_start + 1;
   const int *const rd_threshes = cpi->rd.threshes[segment_id][bsize];
-  const int *const rd_thresh_freq_fact = cpi->rd.thresh_freq_fact[bsize];
+  const int *const rd_thresh_freq_fact = x->rd.thresh_freq_fact[bsize];
   const int mode_search_skip_flags = cpi->sf.mode_search_skip_flags;
   vp9_zero(best_mbmode);
   x->skip_encode = cpi->sf.skip_encode_frame && x->q_index < QIDX_SKIP_THRESH;
@@ -3136,7 +3136,7 @@ int64_t vp9_rd_pick_inter_mode_sb(VP9_COMP *cpi, MACROBLOCK *x,
          (cm->interp_filter == best_mbmode.interp_filter) ||
          !is_inter_block(&best_mbmode));
 
-  update_rd_thresh_fact(cpi, bsize, best_mode_index);
+  update_rd_thresh_fact(cpi, rd_opt, bsize, best_mode_index);
 
   // macroblock modes
   *mbmi = best_mbmode;
@@ -3270,7 +3270,7 @@ int64_t vp9_rd_pick_inter_mode_sb_seg_skip(VP9_COMP *cpi, MACROBLOCK *x,
   assert((cm->interp_filter == SWITCHABLE) ||
          (cm->interp_filter == mbmi->interp_filter));
 
-  update_rd_thresh_fact(cpi, bsize, THR_ZEROMV);
+  update_rd_thresh_fact(cpi, rd_opt, bsize, THR_ZEROMV);
 
   vp9_zero(best_pred_diff);
   vp9_zero(best_filter_diff);
@@ -3411,7 +3411,7 @@ int64_t vp9_rd_pick_inter_mode_sub8x8(VP9_COMP *cpi, MACROBLOCK *x,
     // Test best rd so far against threshold for trying this mode.
     if (rd_less_than_thresh(best_rd,
                             cpi->rd.threshes[segment_id][bsize][ref_index],
-                            cpi->rd.thresh_freq_fact[bsize][ref_index]))
+                            x->rd.thresh_freq_fact[bsize][ref_index]))
       continue;
 
     comp_pred = second_ref_frame > INTRA_FRAME;
@@ -3834,7 +3834,7 @@ int64_t vp9_rd_pick_inter_mode_sub8x8(VP9_COMP *cpi, MACROBLOCK *x,
          (cm->interp_filter == best_mbmode.interp_filter) ||
          !is_inter_block(&best_mbmode));
 
-  update_rd_thresh_fact(cpi, bsize, best_ref_index);
+  update_rd_thresh_fact(cpi, rd_opt, bsize, best_ref_index);
 
   // macroblock modes
   *mbmi = best_mbmode;

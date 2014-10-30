@@ -73,8 +73,6 @@ void vp9_create_encoding_threads(VP9_COMP *cpi) {
                          "Tile decoder thread creation failed");
     }
   }
-  cpi->b_multi_threaded = 1;
-
   // set row encoding hook
   for (i = 0; i < cpi->max_threads; ++i) {
     winterface->sync(&cpi->enc_thread_hndl[i]);
@@ -145,3 +143,95 @@ void add_up_frame_counts(VP9_COMP *cpi, MACROBLOCK *x_thread) {
   ADD_UP_1D_ARRAYS(cpi->rd.filter_diff, x_thread->rd.filter_diff,
                    SWITCHABLE_FILTER_CONTEXTS);
 }
+
+void vp9_mb_copy(VP9_COMP *cpi, MACROBLOCK *x_dst, MACROBLOCK *x_src) {
+  VP9_COMMON *cm = &cpi->common;
+  MACROBLOCKD *const xd_dst = &x_dst->e_mbd;
+  MACROBLOCKD *const xd_src = &x_src->e_mbd;
+  int i;
+
+  for (i = 0; i < MAX_MB_PLANE; ++i) {
+    x_dst->plane[i] = x_src->plane[i];
+    xd_dst->plane[i] = xd_src->plane[i];
+  }
+  xd_dst->mi_stride = xd_src->mi_stride;
+  xd_dst->mi = xd_src->mi;
+  xd_dst->mi[0] = xd_src->mi[0];
+  for (i = 0; i < BLOCK_SIZES; i++)
+    xd_dst->gpu_mvinfo[i] = NULL;
+  xd_dst->block_refs[0] = xd_src->block_refs[0];
+  xd_dst->block_refs[1] = xd_src->block_refs[1];
+  xd_dst->cur_buf = xd_src->cur_buf;
+#if CONFIG_VP9_HIGHBITDEPTH
+  xd_dst->bd = xd_src->bd;
+#endif
+  xd_dst->lossless = xd_src->lossless;
+  xd_dst->corrupted = 0;
+  for (i = 0; i < MAX_MB_PLANE; i++) {
+    xd_dst->above_context[i] = xd_src->above_context[i];
+  }
+  xd_dst->above_seg_context = xd_src->above_seg_context;
+
+  x_dst->skip_block = x_src->skip_block;
+  x_dst->select_tx_size = x_src->select_tx_size;
+  x_dst->skip_recode = x_src->skip_recode;
+  x_dst->skip_optimize = x_src->skip_optimize;
+  x_dst->q_index = x_src->q_index;
+
+  x_dst->errorperbit = x_src->errorperbit;
+  x_dst->sadperbit16 = x_src->sadperbit16;
+  x_dst->sadperbit4 = x_src->sadperbit4;
+  x_dst->rddiv = x_src->rddiv;
+  x_dst->rdmult = x_src->rdmult;
+  x_dst->mb_energy = x_src->mb_energy;
+
+  for (i = 0; i < MV_JOINTS; i++) {
+    x_dst->nmvjointcost[i] = x_src->nmvjointcost[i];
+    x_dst->nmvjointsadcost[i] = x_src->nmvjointsadcost[i];
+  }
+  x_dst->nmvcost[0] = x_src->nmvcost[0];
+  x_dst->nmvcost[1] = x_src->nmvcost[1];
+  x_dst->nmvcost_hp[0] = x_src->nmvcost_hp[0];
+  x_dst->nmvcost_hp[1] = x_src->nmvcost_hp[1];
+  x_dst->mvcost = x_src->mvcost;
+  x_dst->nmvsadcost[0] = x_src->nmvsadcost[0];
+  x_dst->nmvsadcost[1] = x_src->nmvsadcost[1];
+  x_dst->nmvsadcost_hp[0] = x_src->nmvsadcost_hp[0];
+  x_dst->nmvsadcost_hp[1] = x_src->nmvsadcost_hp[1];
+  x_dst->mvsadcost = x_src->mvsadcost;
+
+  x_dst->min_partition_size = x_src->min_partition_size;
+  x_dst->max_partition_size = x_src->max_partition_size;
+
+  vpx_memcpy(x_dst->token_costs, x_src->token_costs,
+             sizeof(x_src->token_costs));
+
+  vp9_zero(x_dst->counts);
+  vp9_zero(x_dst->coef_counts);
+  vpx_memcpy(x_dst->rd.threshes, cpi->rd.threshes, sizeof(cpi->rd.threshes));
+  // freq scaling factors initialization has to happen only for video frame 1.
+  // For all other frames, It self corrects itself while encoding.
+  if (cm->current_video_frame == 0)
+    vpx_memcpy(x_dst->rd.thresh_freq_fact, cpi->rd.thresh_freq_fact,
+               sizeof(cpi->rd.thresh_freq_fact));
+  vp9_zero(x_dst->rd.comp_pred_diff);
+  vp9_zero(x_dst->rd.tx_select_diff);
+  vp9_zero(x_dst->rd.tx_select_threshes);
+  vp9_zero(x_dst->rd.filter_diff);
+  x_dst->rd.RDMULT = cpi->rd.RDMULT;
+  x_dst->rd.RDDIV = cpi->rd.RDDIV;
+
+  x_dst->data_parallel_processing = 0;
+
+  x_dst->optimize = x_src->optimize;
+  x_dst->quant_fp = x_src->quant_fp;
+  vp9_zero(x_dst->skip_txfm);
+  vp9_zero(x_dst->bsse);
+
+  x_dst->fwd_txm4x4 = x_src->fwd_txm4x4;
+  x_dst->itxm_add = x_src->itxm_add;
+#if CONFIG_VP9_HIGHBITDEPTH
+  x_dst->itxm_add = x_src->itxm_add;
+#endif
+}
+

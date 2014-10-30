@@ -74,4 +74,7 @@ void vp9_create_encoding_threads(struct VP9_COMP *cpi);
 
 void add_up_frame_counts(struct VP9_COMP *cpi, struct macroblock *x_thread);
 
+void vp9_mb_copy(struct VP9_COMP *cpi, struct macroblock *x_dst,
+                 struct macroblock *x_src);
+
 #endif /* VP9_ETHREAD_H_ */
