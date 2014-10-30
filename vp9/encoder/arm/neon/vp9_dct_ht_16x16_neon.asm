@@ -238,7 +238,7 @@ cospi_31_64 EQU   804
     vqrshrn.s32     $op4, $ip2, #14
     MEND
 
-   	; --------------------------------------------------------------------------
+    ; --------------------------------------------------------------------------
     ; Calculate the input for the DCT transform
     ; Inputs
     ;   q0 - q15 : Rows1 to Row16 (8 cols)
@@ -270,7 +270,7 @@ cospi_31_64 EQU   804
     MULTIPLY_BY_4_Q0_TO_Q15
   ENDIF
     MEND
-   	; --------------------------------------------------------------------------
+    ; --------------------------------------------------------------------------
     ; Rounds and shifts value in input registers(for pass=1)
     ; Inputs
     ;   q0 - q15 : Rows1 to Row16 (8 cols)
@@ -359,7 +359,7 @@ cospi_31_64 EQU   804
     vshr.s16        q14, q14, #2
     vshr.s16        q15, q15, #2
     MEND
-   	; --------------------------------------------------------------------------
+    ; --------------------------------------------------------------------------
     ; Does the following tasks
     ;   - calculates DCT transform for a single pass
     ;   - even rows of outputs are stored in intermediate buffer(r5)
@@ -519,7 +519,7 @@ cospi_31_64 EQU   804
     vmov.i16        q13,   q4
     vmov.i16        q11,   q2
     MEND
-   	; --------------------------------------------------------------------------
+    ; --------------------------------------------------------------------------
     ; Does the following tasks
     ;   - calculates DST transform for a single pass
     ;   - even rows of outputs are stored in intermediate buffer[r5]
@@ -818,6 +818,7 @@ cospi_31_64 EQU   804
                                             ;           vp9_fdct16x16_neon
     beq vp9_fdct16x16_neon
     push            {r4-r12, lr}            ; push registers to stack
+    vpush           {d8-d15}
     mov             r9,    r3
     lsl             r2,    r2,    #1         ; r2 = stride * 2
     push            {r2}
@@ -1048,11 +1049,13 @@ end_stage_2_col_1_8
     vst1.64         {q14}, [r10], r2
     vst1.64         {q15}, [r10], r2
 
+    vpop            {d8-d15}
     pop             {r4-r12, pc}
     ENDP
 
 |vp9_fdct16x16_neon| PROC
     push            {r4-r12, lr}          ; push registers to stack
+    vpush           {d8-d15}
     mov             r14,   r2
     lsl             r2,    r2,    #1
     push            {r2}
@@ -1231,6 +1234,7 @@ end_stage_2_col_1_8
     vst1.64         {q13}, [r10], r2
     vst1.64         {q14}, [r10], r2
     vst1.64         {q15}, [r10], r2
+    vpop            {d8-d15}
     pop             {r4-r12, pc}
     ENDP
     ; --------------------------------------------------------------------------

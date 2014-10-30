@@ -210,6 +210,7 @@
     ldr             r8,    [sp, #68]     ; uint16_t *eob_ptr
     ldr             r9,    [sp, #76]     ; int16_t *iscan
     ldr             r14,   [sp, #72]     ; zbin_oq_value
+    vpush           {d8-d15}
     ; check if skip_block
     cmp             r2,    #0
     mov             r10,   #0
@@ -353,6 +354,7 @@ findeob_$width$quant_type
     FIND_EOB
     vst1.16         d28[0],[r8]
 end_func_$width$quant_type
+    vpop            {d8-d15}
     pop             {r4-r12, pc}
     MEND
 |vp9_quantize_fp_32x32_neon| PROC
