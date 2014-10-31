@@ -10,6 +10,8 @@
 
 #include "./vpx_config.h"
 
+#include "vp9/common/vp9_reconinter.h"
+
 #include "vp9/encoder/vp9_encoder.h"
 #include "vp9/encoder/vp9_encodeframe.h"
 
@@ -235,3 +237,110 @@ void vp9_mb_copy(VP9_COMP *cpi, MACROBLOCK *x_dst, MACROBLOCK *x_src) {
 #endif
 }
 
+// Row-based multi-threaded loopfilter hook
+static int loop_filter_row_worker(thread_context *const thread_ctxt,
+                                  void *unused) {
+  VP9_COMP *const cpi = thread_ctxt->cpi;
+  VP9_COMMON *const cm = &cpi->common;
+  MACROBLOCKD *const xd = &cpi->mb.e_mbd;
+  const YV12_BUFFER_CONFIG *const frame_buffer = cm->frame_to_show;
+  struct macroblockd_plane planes[MAX_MB_PLANE];
+  const int num_planes = thread_ctxt->y_only ? 1 : MAX_MB_PLANE;
+  int mi_row, mi_col;
+
+  (void)unused;
+  vp9_copy(planes, xd->plane);
+  for (mi_row = thread_ctxt->mi_row_start; mi_row < thread_ctxt->mi_row_end;
+       mi_row += thread_ctxt->mi_row_step) {
+    const int sb_row = mi_row >> MI_BLOCK_SIZE_LOG2;
+    MODE_INFO **const mi = cm->mi_grid_visible + mi_row * cm->mi_stride;
+
+    for (mi_col = 0; mi_col < cm->mi_cols; mi_col += MI_BLOCK_SIZE) {
+      const int sb_col = mi_col >> MI_BLOCK_SIZE_LOG2;
+      LOOP_FILTER_MASK lfm;
+      int plane;
+
+      vp9_enc_sync_read(cpi, sb_row, sb_col);
+
+      vp9_setup_dst_planes(planes, frame_buffer, mi_row, mi_col);
+      vp9_setup_mask(cm, mi_row, mi_col, mi + mi_col, cm->mi_stride, &lfm);
+
+      for (plane = 0; plane < num_planes; ++plane) {
+        vp9_filter_block_plane(cm, &planes[plane], mi_row, &lfm);
+      }
+
+      vp9_enc_sync_write(cpi, sb_row);
+    }
+  }
+
+  return 1;
+}
+
+// VP9 Encoder: Implement multi-threaded loopfilter that uses the threads
+// used for encoding.
+void vp9e_loop_filter_frame_mt(VP9_COMP *cpi, int frame_filter_level,
+                               int y_only, int partial_frame) {
+  VP9_COMMON *const cm = &cpi->common;
+  const int sb_rows = cm->sb_rows;
+  const int num_threads = cpi->max_threads;
+  const VP9WorkerInterface *const winterface = vp9_get_worker_interface();
+  int thread_id;
+  int start_mi_row = 0, end_mi_row, mi_rows_to_filter = cm->mi_rows;
+
+  if (!frame_filter_level)
+      return;
+
+  vp9_loop_filter_frame_init(cm, frame_filter_level);
+
+  // Initialize cur_sb_col to -1 for all SB rows.
+  vpx_memset(cpi->cur_sb_col, -1, sizeof(*cpi->cur_sb_col) * sb_rows);
+
+  if (partial_frame && cm->mi_rows > 8) {
+    int i;
+    start_mi_row = cm->mi_rows >> 1;
+    start_mi_row &= 0xfffffff8;
+    mi_rows_to_filter = MAX(cm->mi_rows / 8, 8);
+
+    // Initialize cur_sb_col to sb_cols for top SB rows indicating
+    // that deblocking is done.
+    for (i = 0; i < start_mi_row >> MI_BLOCK_SIZE_LOG2; i++)
+      cpi->cur_sb_col[i] = cm->sb_cols - 1;
+  }
+  end_mi_row = start_mi_row + mi_rows_to_filter;
+
+  // Set up loopfilter thread data.
+  for (thread_id = 0; thread_id < num_threads; ++thread_id) {
+    VP9Worker *const worker = &cpi->enc_thread_hndl[thread_id];
+    thread_context *const thread_ctxt = (thread_context *)worker->data1;
+
+    worker->hook = (VP9WorkerHook)loop_filter_row_worker;
+
+    // initialize thread context
+    thread_ctxt->cpi = cpi;
+
+    // thread start sb row
+    thread_ctxt->mi_row_start = start_mi_row + MI_BLOCK_SIZE * thread_id;
+    // thread end sb row
+    thread_ctxt->mi_row_end = end_mi_row;
+    // thread step sb row
+    thread_ctxt->mi_row_step = MI_BLOCK_SIZE * cpi->max_threads;
+
+    //thread id
+    thread_ctxt->thread_id = thread_id;
+
+    // yonly
+    thread_ctxt->y_only = y_only;
+
+    // Start loopfiltering
+    if (thread_id == num_threads - 1) {
+      winterface->execute(worker);
+    } else {
+      winterface->launch(worker);
+    }
+  }
+
+  // Wait till all rows are finished
+  for (thread_id = 0; thread_id < num_threads; ++thread_id) {
+    winterface->sync(&cpi->enc_thread_hndl[thread_id]);
+  }
+}

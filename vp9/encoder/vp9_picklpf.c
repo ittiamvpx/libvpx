@@ -38,8 +38,12 @@ static int try_filter_frame(const YV12_BUFFER_CONFIG *sd, VP9_COMP *const cpi,
   VP9_COMMON *const cm = &cpi->common;
   int filt_err;
 
-  vp9_loop_filter_frame(cm->frame_to_show, cm, &cpi->mb.e_mbd, filt_level, 1,
-                        partial_frame);
+  if (cpi->max_threads > 1)
+    vp9e_loop_filter_frame_mt(cpi, filt_level, 1, 0);
+  else
+    vp9_loop_filter_frame(cm->frame_to_show, cm, &cpi->mb.e_mbd, filt_level, 1,
+                          partial_frame);
+
   filt_err = vp9_get_y_sse(sd, cm->frame_to_show);
 
   // Re-instate the unfiltered frame

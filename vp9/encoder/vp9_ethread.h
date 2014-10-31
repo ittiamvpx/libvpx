@@ -58,12 +58,22 @@ struct macroblock;
 }
 
 typedef struct thread_context {
-  void *cpi;
+  struct VP9_COMP *cpi;
+
+  // thread specific mb context
   DECLARE_ALIGNED(16, struct macroblock, mb);
 
+  // threads shall process rows of the video frame. Below params represent
+  // the list of row id's the thread processes
   int mi_row_start, mi_row_end;
   int mi_row_step;
+
+  // thread id
   int thread_id;
+
+  // used by loop filter threads to determine if only y plane needs to be
+  // filtered or all mb planes have to be filtered
+  int y_only;
 } thread_context;
 
 void vp9_enc_sync_read(struct VP9_COMP *cpi, int sb_row, int sb_col);
@@ -76,5 +86,8 @@ void add_up_frame_counts(struct VP9_COMP *cpi, struct macroblock *x_thread);
 
 void vp9_mb_copy(struct VP9_COMP *cpi, struct macroblock *x_dst,
                  struct macroblock *x_src);
+
+void vp9e_loop_filter_frame_mt(struct VP9_COMP *cpi, int frame_filter_level,
+                               int y_only, int partial_frame);
 
 #endif /* VP9_ETHREAD_H_ */

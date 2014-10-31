@@ -3595,6 +3595,16 @@ void encode_tiles_mt(VP9_COMP *cpi) {
   const VP9WorkerInterface *const winterface = vp9_get_worker_interface();
   int thread_id;
 
+  // Initialize row encoding hook
+  for (thread_id = 0; thread_id < cpi->max_threads; ++thread_id) {
+    winterface->sync(&cpi->enc_thread_hndl[thread_id]);
+    cpi->enc_thread_hndl[thread_id].hook =
+        (VP9WorkerHook) encoding_thread_process;
+  }
+
+  // Initialize cur_sb_col to -1 for all SB rows.
+  vpx_memset(cpi->cur_sb_col, -1, (sizeof(*cpi->cur_sb_col) * cm->sb_rows));
+
   for (thread_id = 0; thread_id < cpi->max_threads ; ++thread_id) {
     VP9Worker *const worker = &cpi->enc_thread_hndl[thread_id];
     thread_context *const thread_ctxt = (thread_context *)worker->data1;
@@ -3632,9 +3642,6 @@ void encode_tiles_mt(VP9_COMP *cpi) {
     // for updating probability and rd thresh tables for the next frame.
     add_up_frame_counts(cpi, x);
   }
-
-  // after encoding the frame, reset cur sb col
-  vpx_memset(cpi->cur_sb_col, -1, (sizeof(*cpi->cur_sb_col) * cm->sb_rows));
 }
 
 int encoding_thread_process(thread_context *const thread_ctxt, void* data2) {
