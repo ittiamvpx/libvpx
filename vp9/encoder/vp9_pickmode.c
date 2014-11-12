@@ -635,6 +635,7 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
         int64_t pf_dist[3];
         unsigned int pf_var[3];
         unsigned int pf_sse[3];
+        int pf_skip_txfm = 0;
         TX_SIZE pf_tx_size[3];
         int64_t best_cost = INT64_MAX;
         INTERP_FILTER best_filter = SWITCHABLE, filter;
@@ -653,7 +654,7 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
           if (cost < best_cost) {
             best_filter = filter;
             best_cost = cost;
-            skip_txfm = x->skip_txfm[0];
+            pf_skip_txfm = x->skip_txfm[0];
 
             if (cpi->sf.reuse_inter_pred_sby) {
               if (this_mode_pred != current_pred) {
@@ -679,7 +680,7 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
         dist = pf_dist[mbmi->interp_filter];
         var_y = pf_var[mbmi->interp_filter];
         sse_y = pf_sse[mbmi->interp_filter];
-        x->skip_txfm[0] = skip_txfm;
+        x->skip_txfm[0] = pf_skip_txfm;
       } else {
         mbmi->interp_filter = (filter_ref == SWITCHABLE) ? EIGHTTAP: filter_ref;
         vp9_build_inter_predictors_sby(xd, mi_row, mi_col, bsize);
