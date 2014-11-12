@@ -156,11 +156,11 @@ void vp9_free_pc_tree(VP9_COMP *cpi) {
   int i;
 
   // Set up all 4x4 mode contexts
-  for (i = 0; i < num_threads * leaf_nodes; ++i)
+  for (i = 0; i < num_threads * leaf_nodes && cpi->leaf_tree != NULL; ++i)
     free_mode_context(&cpi->leaf_tree[i]);
 
   // Sets up all the leaf nodes in the tree.
-  for (i = 0; i < num_threads * tree_nodes; ++i)
+  for (i = 0; i < num_threads * tree_nodes && cpi->pc_tree != NULL; ++i)
     free_tree_contexts(&cpi->pc_tree[i]);
 
   vpx_free(cpi->pc_tree);
