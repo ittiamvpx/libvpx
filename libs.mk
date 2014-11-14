@@ -102,7 +102,6 @@ ifeq ($(CONFIG_VP8_DECODER),yes)
   INSTALL_MAPS += include/vpx/% $(SRC_PATH_BARE)/$(VP8_PREFIX)/%
   CODEC_DOC_SECTIONS += vp8 vp8_decoder
 endif
-
 ifneq ($(CONFIG_VP9_ENCODER)$(CONFIG_VP9_DECODER),)
   VP9_PREFIX=vp9/
   include $(SRC_PATH_BARE)/$(VP9_PREFIX)vp9_common.mk

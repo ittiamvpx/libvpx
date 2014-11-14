@@ -49,9 +49,6 @@
 #define SPLIT_MV_ZBIN_BOOST  0
 #define INTRA_ZBIN_BOOST     0
 
-// Number of block sizes for which MV computations are done in GPU
-#define GPU_BLOCK_SIZES      3
-
 static void encode_superblock(VP9_COMP *cpi, MACROBLOCK *const x,
                               TOKENEXTRA **t, int output_enabled,
                               int mi_row, int mi_col, BLOCK_SIZE bsize,
@@ -140,18 +137,6 @@ static INLINE void set_modeinfo_offsets(VP9_COMMON *const cm,
   xd->mi[0] = cm->mi + idx_str;
 }
 
-static INLINE void set_mvinfo_offsets(VP9_COMMON *const cm,
-                                      MACROBLOCKD *const xd,
-                                      int mi_row,
-                                      int mi_col,
-                                      BLOCK_SIZE bsize) {
-  const int blocks_in_row = (cm->sb_cols * num_mxn_blocks_wide_lookup[bsize]);
-  const int block_index_row = (mi_row >> mi_height_log2(bsize));
-  const int block_index_col = (mi_col >> mi_width_log2(bsize));
-  xd->gpu_mvinfo[bsize] = cm->gpu_mvinfo_base_array[bsize] +
-      (block_index_row * blocks_in_row) + block_index_col;
-}
-
 static INLINE void get_start_tok(VP9_COMP *cpi, int tile_row, int tile_col,
                                 int mi_row, TOKENEXTRA **tok) {
   VP9_COMMON *const cm = &cpi->common;
@@ -186,7 +171,7 @@ static void set_offsets(VP9_COMP *cpi, MACROBLOCK *const x,
   set_modeinfo_offsets(cm, xd, mi_row, mi_col);
 
   if (cm->use_gpu)
-    set_mvinfo_offsets(cm, xd, mi_row, mi_col, bsize);
+    vp9_gpu_set_mvinfo_offsets(cm, xd, mi_row, mi_col, bsize);
 
   mbmi = &xd->mi[0]->mbmi;
 
@@ -2880,7 +2865,7 @@ static void nonrd_pick_partition(VP9_COMP *cpi, MACROBLOCK *const x,
 
         if (mi_row + y_idx >= cm->mi_rows || mi_col + x_idx >= cm->mi_cols)
           continue;
-        set_mvinfo_offsets(cm, xd, mi_row + y_idx, mi_col + x_idx, BLOCK_16X16);
+        vp9_gpu_set_mvinfo_offsets(cm, xd, mi_row + y_idx, mi_col + x_idx, BLOCK_16X16);
         total_rd_16x16 += xd->gpu_mvinfo[BLOCK_16X16]->best_rd;
       }
       // If the 32x32 RD cost is 12.5% lesser than the total RD cost(from GPU)
@@ -3204,12 +3189,13 @@ static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
                                                int mi_row, int mi_col,
                                                TOKENEXTRA **tp)
 {
-  SPEED_FEATURES * const sf = &cpi->sf;
-  VP9_COMMON * const cm = &cpi->common;
-  MACROBLOCKD * const xd = &x->e_mbd;
-  int h, i, j, k;
-  const BLOCK_SIZE bsize[GPU_BLOCK_SIZES] = { BLOCK_32X32, BLOCK_16X16,
-      BLOCK_8X8 };
+  SPEED_FEATURES *const sf = &cpi->sf;
+#if !CONFIG_GPU_COMPUTE
+  VP9_COMMON *const cm = &cpi->common;
+  MACROBLOCKD *const xd = &x->e_mbd;
+#endif
+  GPU_BLOCK_SIZE i;
+  int h, j, k;
   const int num_32x32_in_64x64 = 4;
   const int thread_id = x->thread_id;
 
@@ -3228,16 +3214,18 @@ static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
     // Second iteration(i = 1) will run for four 16x16 childs blocks
     // Third iteration(i = 2) will run for sixteen(4*4) 8x8 child blocks
     for (i = 0; i < GPU_BLOCK_SIZES; ++i) {
+      BLOCK_SIZE bsize = get_actual_block_size(i);
       PC_TREE *pc_tree_i = cpi->pc_root[thread_id]->split[h];
       PC_TREE *pc_parent_i = cpi->pc_root[thread_id];
       const int ms = num_8x8_blocks_wide_lookup[BLOCK_32X32];
       int col_idx_i = (h & 1) * ms;
       int row_idx_i = (h >> 1) * ms;
-      int split_into_16x16 = bsize[i] < BLOCK_32X32;
-      total_rate[i] = total_dist[i] = 0;
+      int split_into_16x16 = bsize < BLOCK_32X32;
+      total_rate[i] = 0;
+      total_dist[i] = 0;
       // Limit the minimum partition size here, so that "nonrd_pick_partition"
       // will not get called recursively
-      x->min_partition_size = bsize[i];
+      x->min_partition_size = bsize;
 
       // This loop runs for each 16x16 block, whenever applicable
       for (j = 0; j < (split_into_16x16 ? 4 : 1); ++j) {
@@ -3247,7 +3235,7 @@ static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
         const int ms = num_8x8_blocks_wide_lookup[BLOCK_16X16];
         int col_idx_j = col_idx_i + ((j & 1) * ms);
         int row_idx_j = row_idx_i + (j >> 1) * ms;
-        int split_into_8x8 = bsize[i] < BLOCK_16X16;
+        int split_into_8x8 = bsize < BLOCK_16X16;
 
         // This loop runs for each 8x8 block, whenever applicable
         for (k = 0; k < (split_into_8x8 ? 4 : 1); ++k) {
@@ -3263,29 +3251,28 @@ static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
               mi_row + row_idx >= tile->mi_row_end)
             continue;
 
+#if !CONFIG_GPU_COMPUTE // Disabled temporarily for OpenCL development. Will be enabled back soon.
           // Let us try to avoid 8x8's MV computations if 32x32 is winning
           // already
-          if (bsize[i] == BLOCK_8X8) {
-            assert(i == 2 &&
-                   bsize[0] == BLOCK_32X32 && bsize[1] == BLOCK_16X16);
-
-            // rdcost[0] corresponds to RD cost of 32x32 block
-            // rdcost[1] corresponds to total RD cost of four 16x16 blocks
+          if (bsize == BLOCK_8X8) {
             // If the 32x32's RD cost is 12.5% lesser than 16x16's RD cost,
             // then skip computations for 8x8
-            if (rdcost[0] < (rdcost[1] * 7) / 8) {
-              set_mvinfo_offsets(cm, xd, mi_row + row_idx, mi_col + col_idx,
-                                 BLOCK_8X8);
+            if (rdcost[GPU_BLOCK_32X32] < (rdcost[GPU_BLOCK_16X16] * 7) / 8) {
+              vp9_gpu_set_mvinfo_offsets(cm, xd,
+                                         mi_row + row_idx, mi_col + col_idx,
+                                         BLOCK_8X8);
               xd->gpu_mvinfo[BLOCK_8X8]->best_rd = INT64_MAX;
               xd->gpu_mvinfo[BLOCK_8X8]->returnrate = INT32_MAX;
               xd->gpu_mvinfo[BLOCK_8X8]->returndistortion = INT64_MAX;
               continue;
             }
           }
-
+#else
+          (void)rdcost[i];
+#endif
           load_pred_mv(x, &pc_parent->none);
           nonrd_pick_partition(cpi, x, tile, tp, mi_row + row_idx,
-                               mi_col + col_idx, bsize[i], &rate, &dist, 0,
+                               mi_col + col_idx, bsize, &rate, &dist, 0,
                                INT64_MAX, pc_tree);
           total_rate[i] += rate;
           total_dist[i] += dist;
@@ -3533,19 +3520,51 @@ static INLINE void restore_frame_counts(VP9_COMP *cpi, MACROBLOCK *x_thread) {
                sizeof(x_thread->rd.tx_select_diff));
 }
 
-// TODO(ram-ittiam): Right now CPU performs the data parallel MV compute.
-// Modify it for actual GPU compute
-static void vp9_gpu_mv_compute(VP9_COMP *cpi, MACROBLOCK *const x,
-                               const TileInfo *const tile) {
+static void vp9_gpu_mv_compute(VP9_COMP *cpi, MACROBLOCK *const x) {
   TOKENEXTRA *tok = cpi->tok;
-  int mi_row;
+  VP9_COMMON *const cm = &cpi->common;
+  const int tile_cols = 1 << cm->log2_tile_cols;
+  const int tile_rows = 1 << cm->log2_tile_rows;
+  int tile_col, tile_row;
+#if CONFIG_GPU_COMPUTE
+  VP9_GPU * const gpu = &cpi->gpu;
+  GPU_OUTPUT *gpu_output[GPU_BLOCK_SIZES];
+  const YV12_BUFFER_CONFIG *reference_frame = get_ref_frame_buffer(cpi,
+                                                                   LAST_FRAME);
+  const YV12_BUFFER_CONFIG *current_frame = cpi->Source;
+  GPU_RD_PARAMETERS gpu_rd_constants;
+  GPU_BLOCK_SIZE gpu_bsize;
+
+  for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+    gpu->gpu_input[gpu_bsize] = gpu->acquire_input_buffer(cpi, gpu_bsize);
+  }
+#endif
 
   x->data_parallel_processing = 1;
-  for (mi_row = tile->mi_row_start; mi_row < tile->mi_row_end;
-      mi_row += MI_BLOCK_SIZE) {
-    encode_nonrd_sb_row(cpi, x, tile, mi_row, &tok);
+  for (tile_row = 0; tile_row < tile_rows; ++tile_row) {
+    for (tile_col = 0; tile_col < tile_cols; ++tile_col) {
+      TileInfo tile;
+      int mi_row;
+      vp9_tile_init(&tile, cm, tile_row, tile_col);
+      for (mi_row = tile.mi_row_start; mi_row < tile.mi_row_end; mi_row +=
+          MI_BLOCK_SIZE) {
+        encode_nonrd_sb_row(cpi, x, &tile, mi_row, &tok);
+      }
+    }
   }
   x->data_parallel_processing = 0;
+#if CONFIG_GPU_COMPUTE
+  for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+
+    vp9_gpu_copy_rd_parameters(cpi, x, &gpu_rd_constants, gpu_bsize);
+
+    gpu->execute(cpi, reference_frame->buffer_alloc,
+                 current_frame->buffer_alloc, gpu->gpu_input[gpu_bsize],
+                 &gpu_output[gpu_bsize], &gpu_rd_constants, gpu_bsize);
+
+    vp9_gpu_copy_output(cpi, x, gpu_bsize, gpu_output[gpu_bsize]);
+  }
+#endif
 }
 
 static void encode_tiles(VP9_COMP *cpi) {
@@ -3556,6 +3575,15 @@ static void encode_tiles(VP9_COMP *cpi) {
   int tile_col, tile_row;
   TOKENEXTRA *tok;
 
+  // Call the Data parallel MV compute (to be performed by GPU)
+  if (cm->use_gpu &&
+      cpi->sf.use_nonrd_pick_mode && !frame_is_intra_only(cm)) {
+    // TODO(ram-ittiam): Remove this assert, after adding appropriate sanity
+    // checks for use_gpu setting
+    assert(cm->prev_mi != NULL);
+
+    vp9_gpu_mv_compute(cpi, x);
+  }
   for (tile_row = 0; tile_row < tile_rows; ++tile_row) {
     for (tile_col = 0; tile_col < tile_cols; ++tile_col) {
       TileInfo tile;
@@ -3563,15 +3591,6 @@ static void encode_tiles(VP9_COMP *cpi) {
 
       vp9_tile_init(&tile, cm, tile_row, tile_col);
 
-      // Call the Data parallel MV compute (to be performed by GPU)
-      if (cm->use_gpu &&
-          cpi->sf.use_nonrd_pick_mode && !frame_is_intra_only(cm)) {
-        // TODO(ram-ittiam): Remove this assert, after adding appropriate sanity
-        // checks for use_gpu setting
-        assert(cm->prev_mi != NULL);
-
-        vp9_gpu_mv_compute(cpi, x, &tile);
-      }
       for (mi_row = tile.mi_row_start; mi_row < tile.mi_row_end;
            mi_row += MI_BLOCK_SIZE) {
         const int sb_row = mi_row >> MI_BLOCK_SIZE_LOG2;
@@ -3683,6 +3702,10 @@ int encoding_thread_process(thread_context *const thread_ctxt, void* data2) {
     // checks for use_gpu setting
     assert(cm->prev_mi != NULL);
 
+    // TODO(karthick-ittiam): Add support for multithreading in GPU compute mode
+#if CONFIG_GPU_COMPUTE
+    assert(0);
+#endif
     x->data_parallel_processing = 1;
     for (mi_row = thread_ctxt->mi_row_start; mi_row < thread_ctxt->mi_row_end;
         mi_row += thread_ctxt->mi_row_step) {

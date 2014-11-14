@@ -474,6 +474,14 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
   struct buf_2d orig_dst = pd->dst;
   PRED_BUFFER *best_pred = NULL;
   PRED_BUFFER *this_mode_pred = NULL;
+#if CONFIG_GPU_COMPUTE
+  GPU_BLOCK_SIZE gpu_bsize = get_gpu_block_size(bsize);
+  VP9_GPU *gpu = &cpi->gpu;
+  GPU_INPUT *gpu_input = (gpu_bsize == GPU_BLOCK_INVALID) ? NULL :
+      gpu->gpu_input[gpu_bsize] + get_gpu_buffer_index(cm, mi_row, mi_col, bsize);
+#else
+  GPU_INPUT *gpu_input = NULL;
+#endif
 
   if (cpi->sf.reuse_inter_pred_sby) {
     int i;
@@ -502,6 +510,11 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
   mbmi->interp_filter = cm->interp_filter == SWITCHABLE ?
                         EIGHTTAP : cm->interp_filter;
   mbmi->segment_id = segment_id;
+
+  // TODO(karthick-ittiam) : For GPU compute, segment_id of '0' is assumed.
+  // Need to add support for multiple segments.
+  if (cm->use_gpu && gpu_input)
+    assert(segment_id == 0);
 
   for (ref_frame = LAST_FRAME; ref_frame <= ALTREF_FRAME; ++ref_frame) {
     PREDICTION_MODE this_mode;
@@ -578,6 +591,13 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
       }
     }
 
+    if (cm->use_gpu && gpu_input) {
+      gpu_input->mode_context = mbmi->mode_context[ref_frame];
+      gpu_input->do_newmv = 1;
+      // Only LAST_FRAME as reference frame is supported while GPU compute.
+      assert(ref_frame == LAST_FRAME);
+    }
+
     for (this_mode = start_mode; this_mode <= end_mode; ++this_mode) {
       int rate_mv = 0;
       int mode_rd_thresh;
@@ -585,6 +605,10 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
       if (const_motion[ref_frame] &&
           (this_mode == NEARMV || this_mode == ZEROMV))
         continue;
+
+      // For 32x32 GPU compute assumes ZEROMV is not required to be computed
+      if (cm->use_gpu && gpu_input && bsize == BLOCK_32X32 && this_mode == ZEROMV)
+        assert(!(cpi->sf.inter_mode_mask[bsize] & (1 << this_mode)));
 
       if (!(cpi->sf.inter_mode_mask[bsize] & (1 << this_mode)))
         continue;
@@ -601,8 +625,12 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
           continue;
         if (!combined_motion_search(cpi, x, bsize, mi_row, mi_col,
                                     &frame_mv[NEWMV][ref_frame],
-                                    &rate_mv, best_rd))
+                                    &rate_mv, best_rd)) {
+          // Signal the GPU to skip further NEWMV computations
+          if (cm->use_gpu && gpu_input)
+            gpu_input->do_newmv = 0;
           continue;
+        }
       }
 
       if (!x->data_parallel_processing &&
@@ -627,6 +655,12 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
         }
       }
 
+      // Fill the MV details for GPU compute
+      if (this_mode == NEWMV && cm->use_gpu && gpu_input) {
+        gpu_input->mv = mbmi->mv[0].as_mv;
+        gpu_input->rate_mv = rate_mv;
+        xd->gpu_mvinfo[bsize]->mv[0].as_int = mbmi->mv[0].as_int;
+      }
       if ((this_mode == NEWMV || filter_ref == SWITCHABLE) &&
           pred_filter_search &&
           ((mbmi->mv[0].as_mv.row & 0x07) != 0 ||
@@ -640,6 +674,12 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
         int64_t best_cost = INT64_MAX;
         INTERP_FILTER best_filter = SWITCHABLE, filter;
         PRED_BUFFER *current_pred = this_mode_pred;
+
+        // Check if further computations can be performed by the GPU
+        if (this_mode == NEWMV && cm->use_gpu && gpu_input) {
+          gpu_input->filter_type = SWITCHABLE;
+          continue;
+        }
 
         for (filter = EIGHTTAP; filter <= EIGHTTAP_SHARP; ++filter) {
           int64_t cost;
@@ -683,6 +723,14 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
         x->skip_txfm[0] = pf_skip_txfm;
       } else {
         mbmi->interp_filter = (filter_ref == SWITCHABLE) ? EIGHTTAP: filter_ref;
+
+        // Check if further computations can be performed by the GPU
+        if (this_mode == NEWMV && cm->use_gpu && gpu_input) {
+          // GPU compute assumes EIGHTTAP filter
+          assert(mbmi->interp_filter == EIGHTTAP);
+          gpu_input->filter_type = mbmi->interp_filter;
+          continue;
+        }
         vp9_build_inter_predictors_sby(xd, mi_row, mi_col, bsize);
         model_rd_for_sb_y(cpi, bsize, x, xd, &rate, &dist, &var_y, &sse_y);
       }
@@ -739,9 +787,11 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
     // we are done.
     if (best_rd < INT64_MAX)
       break;
+    if (cm->use_gpu && gpu_input)
+      break;
   }
 
-  if (x->data_parallel_processing) {
+  if (x->data_parallel_processing && !gpu_input) {
     xd->gpu_mvinfo[bsize]->best_rd = best_rd;
     xd->gpu_mvinfo[bsize]->returnrate = *returnrate;
     xd->gpu_mvinfo[bsize]->returndistortion = *returndistortion;

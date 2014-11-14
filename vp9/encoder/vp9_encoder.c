@@ -36,6 +36,7 @@
 #include "vp9/encoder/vp9_encodeframe.h"
 #include "vp9/encoder/vp9_encodemv.h"
 #include "vp9/encoder/vp9_firstpass.h"
+#include "vp9/encoder/vp9_gpu.h"
 #include "vp9/encoder/vp9_mbgraph.h"
 #include "vp9/encoder/vp9_encoder.h"
 #include "vp9/encoder/vp9_picklpf.h"
@@ -606,7 +607,16 @@ static void init_config(struct VP9_COMP *cpi, VP9EncoderConfig *oxcf) {
   // conditions needs to be identified and added.
   cm->use_gpu = cpi->oxcf.use_gpu;
   vp9_alloc_compressor_data(cpi);
-
+#if CONFIG_GPU_COMPUTE
+  if (cm->use_gpu) {
+    // TODO(karthick-ittiam): If the GPU initialization fails, the calling
+    // function signals it as memory allocation error, instead of the error
+    // signaled below. This needs to be fixed.
+    if (vp9_gpu_init(&cpi->gpu))
+      vpx_internal_error(&cm->error, VPX_CODEC_ERROR,
+                         "GPU initialization failed");
+  }
+#endif
   // Spatial scalability.
   cpi->svc.number_spatial_layers = oxcf->ss_number_layers;
   // Temporal scalability.
@@ -2473,6 +2483,10 @@ static void check_initial_width(VP9_COMP *cpi, int subsampling_x,
     alloc_raw_frame_buffers(cpi);
     alloc_ref_frame_buffers(cpi);
     alloc_util_frame_buffers(cpi);
+#if CONFIG_GPU_COMPUTE
+    if (cm->use_gpu)
+      cpi->gpu.alloc_buffers(cpi);
+#endif
 
     init_motion_estimation(cpi);
 

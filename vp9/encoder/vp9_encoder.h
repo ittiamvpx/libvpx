@@ -42,6 +42,7 @@
 #include "vp9/encoder/vp9_denoiser.h"
 #endif
 #include "vp9/encoder/vp9_ethread.h"
+#include "vp9/encoder/vp9_gpu.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -430,6 +431,9 @@ typedef struct VP9_COMP {
 
 #if CONFIG_VP9_TEMPORAL_DENOISING
   VP9_DENOISER denoiser;
+#endif
+#if CONFIG_GPU_COMPUTE
+  VP9_GPU gpu;
 #endif
 } VP9_COMP;
 

@@ -42,6 +42,8 @@ Advanced options:
   ${toggle_postproc}              postprocessing
   ${toggle_vp9_postproc}          vp9 specific postprocessing
   ${toggle_multithread}           multithreaded encoding and decoding
+  ${toggle_opencl}                OpenCL acceleration of encoder
+  --opencl-lib=PATH               Name of the OpenCL library with full path for linking (when OpenCL is enabled)  
   ${toggle_spatial_resampling}    spatial sampling (scaling) support
   ${toggle_realtime_only}         enable this option while building for real-time encoding
   ${toggle_onthefly_bitpacking}   enable on-the-fly bitpacking in real-time encoding
@@ -209,6 +211,7 @@ enable_feature optimizations
 enable_feature fast_unaligned #allow unaligned accesses, if supported by hw
 enable_feature spatial_resampling
 enable_feature multithread
+disable_feature opencl
 enable_feature os_support
 enable_feature temporal_denoising
 
@@ -312,6 +315,7 @@ CONFIG_LIST="
     postproc
     vp9_postproc
     multithread
+    opencl
     internal_stats
     ${CODECS}
     ${CODEC_FAMILIES}
@@ -373,6 +377,7 @@ CMDLINE_SELECT="
     postproc
     vp9_postproc
     multithread
+    opencl
     internal_stats
     ${CODECS}
     ${CODEC_FAMILIES}
