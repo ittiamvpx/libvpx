@@ -38,14 +38,6 @@ typedef struct VP9_OPENCL {
 } VP9_OPENCL;
 
 int vp9_opencl_init(VP9_GPU *gpu);
-void vp9_opencl_alloc_buffers(struct VP9_COMP *cpi);
-void *vp9_opencl_acquire_input_buffer(struct VP9_COMP *cpi,
-                                      GPU_BLOCK_SIZE gpu_bsize);
-void vp9_opencl_execute(struct VP9_COMP *cpi,
-                        uint8_t* reference_frame, uint8_t* current_frame,
-                        GPU_INPUT *gpu_input, GPU_OUTPUT **gpu_output,
-                        GPU_RD_PARAMETERS *gpu_rd_constants,
-                        GPU_BLOCK_SIZE gpu_bsize);
 
 #ifdef __cplusplus
 }  // extern "C"

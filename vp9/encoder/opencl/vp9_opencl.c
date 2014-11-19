@@ -53,125 +53,8 @@ static char *read_src(const char *src_file_name) {
   return src;
 }
 
-int vp9_opencl_init(VP9_GPU *gpu) {
-  VP9_OPENCL *opencl;
-  cl_int status;
 
-  cl_uint num_platforms = 0;
-  cl_platform_id platform;
-  cl_uint num_devices = 0;
-  cl_device_id device;
-  const cl_command_queue_properties command_queue_properties = 0;
-  cl_program program;
-  // TODO(karthick-ittiam) : Pass this prefix path as an input from testbench
-  const char *kernel_file_name= PREFIX_PATH"vp9_inter_prediction_and_rd_calc.cl";
-  // TODO(karthick-ittiam) : Fix this hardcoding
-  const char *build_options[GPU_BLOCK_SIZES] = {
-      "-DBLOCK_SIZE_IN_PIXELS=32",
-      "-DBLOCK_SIZE_IN_PIXELS=16",
-      "-DBLOCK_SIZE_IN_PIXELS=8" };
-  char *kernel_src;
-  GPU_BLOCK_SIZE gpu_bsize;
-  gpu->compute_framework = vpx_calloc(1, sizeof(VP9_OPENCL));
-  gpu->alloc_buffers = vp9_opencl_alloc_buffers;
-  gpu->acquire_input_buffer = vp9_opencl_acquire_input_buffer;
-  gpu->execute = vp9_opencl_execute;
-  opencl = gpu->compute_framework;
-
-
-  // Get the number of platforms in the system.
-  status = clGetPlatformIDs(0, NULL, &num_platforms);
-  if (status != CL_SUCCESS || num_platforms == 0)
-    goto fail;
-
-  // Get the platform ID for one platform
-  status = clGetPlatformIDs(1, &platform, NULL);
-  if (status != CL_SUCCESS)
-    goto fail;
-
-  // Get the number of devices available on the platform
-  status = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 0, NULL, &num_devices);
-  if (status != CL_SUCCESS || num_devices == 0)
-    goto fail;
-
-  // Get the device ID for one device
-  status = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, NULL);
-  if (status != CL_SUCCESS)
-    goto fail;
-
-  // Create OpenCL context for one device
-  opencl->context = clCreateContext(NULL, 1, &device, NULL, NULL, &status);
-  if (status != CL_SUCCESS || opencl->context == NULL)
-    goto fail;
-
-  // Create a command queue for the device
-  opencl->cmd_queue = clCreateCommandQueue(opencl->context, device,
-                                           command_queue_properties,
-                                           &status);
-  if (status != CL_SUCCESS || opencl->cmd_queue == NULL)
-    goto fail;
-
-
-
-  for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
-    // Read kernel source files
-    kernel_src = read_src(kernel_file_name);
-    if (kernel_src == NULL)
-      goto fail;
-
-    program = clCreateProgramWithSource(opencl->context, 1,
-                                        (const char**)(void *)&kernel_src,
-                                        NULL,
-                                        &status);
-    vpx_free(kernel_src);
-    if (status != CL_SUCCESS)
-      goto fail;
-
-
-    // Build the program
-    status = clBuildProgram(program, 1, &device, build_options[gpu_bsize],
-                            NULL, NULL);
-    if (status != CL_SUCCESS) {
-    // Enable this if you are a OpenCL developer and need to print the build
-    // errors of the OpenCL kernel
-#if OPENCL_DEVELOPER_MODE
-      uint8_t *build_log;
-      size_t build_log_size;
-
-      clGetProgramBuildInfo(program,
-          device,
-          CL_PROGRAM_BUILD_LOG,
-          0,
-          NULL,
-          &build_log_size);
-      build_log = (uint8_t*)vpx_malloc(build_log_size);
-      if (build_log == NULL)
-        goto fail;
-
-      clGetProgramBuildInfo(program,
-          device,
-          CL_PROGRAM_BUILD_LOG,
-          build_log_size,
-          build_log,
-          NULL);
-      build_log[build_log_size-1] = '\0';
-      fprintf(stderr, "Build Log:\n%s\n", build_log);
-      vpx_free(build_log);
-#endif
-      goto fail;
-    }
-    opencl->inter_pred_and_rd_calc[gpu_bsize] = clCreateKernel(
-        program, "inter_prediction_and_rd_calc", &status);
-    if (status != CL_SUCCESS)
-      goto fail;
-  }
-
-  return 0;
-fail:
-  return 1;
-}
-
-void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
+static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
   VP9_COMMON *const cm = &cpi->common;
   VP9_OPENCL *opencl = (VP9_OPENCL *)cpi->gpu.compute_framework;
   cl_int status;
@@ -257,7 +140,41 @@ fail:
   return;
 }
 
-void *vp9_opencl_acquire_input_buffer(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize) {
+static void vp9_opencl_free_buffers(VP9_COMP *cpi) {
+  VP9_OPENCL *opencl = (VP9_OPENCL *)cpi->gpu.compute_framework;
+  cl_int status;
+  GPU_BLOCK_SIZE gpu_bsize;
+
+  status = clReleaseMemObject(opencl->current_frame);
+  if (status != CL_SUCCESS)
+    goto fail;
+
+  status = clReleaseMemObject(opencl->reference_frame);
+  if (status != CL_SUCCESS)
+    goto fail;
+
+  status = clReleaseMemObject(opencl->rd_parameters);
+  if (status != CL_SUCCESS)
+    goto fail;
+
+  for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+    status = clReleaseMemObject(opencl->input_mv[gpu_bsize]);
+    if (status != CL_SUCCESS)
+      goto fail;
+    status = clReleaseMemObject(opencl->output_rd[gpu_bsize]);
+    if (status != CL_SUCCESS)
+      goto fail;
+  }
+
+  printf("\nOpenCL Free successful\n");
+  return;
+fail:
+  printf("\nOpenCL Free FAILED\n");
+  assert(0);
+  return;
+}
+
+static void *vp9_opencl_acquire_input_buffer(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize) {
   VP9_OPENCL *const opencl = (VP9_OPENCL *)cpi->gpu.compute_framework;
   cl_int status;
   if (opencl->input_mv_mapped[gpu_bsize] == NULL) {
@@ -272,7 +189,7 @@ void *vp9_opencl_acquire_input_buffer(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize) {
   return opencl->input_mv_mapped[gpu_bsize];
 }
 
-void vp9_opencl_execute(VP9_COMP *cpi,
+static void vp9_opencl_execute(VP9_COMP *cpi,
                         uint8_t* reference_frame, uint8_t* current_frame,
                         GPU_INPUT *gpu_input, GPU_OUTPUT **gpu_output,
                         GPU_RD_PARAMETERS *gpu_rd_parameters,
@@ -374,3 +291,150 @@ void vp9_opencl_execute(VP9_COMP *cpi,
 
   *gpu_output = (GPU_OUTPUT *)opencl->output_rd_mapped[gpu_bsize];
 }
+
+static void vp9_opencl_remove(VP9_COMP *cpi) {
+  VP9_OPENCL *const opencl = (VP9_OPENCL *)cpi->gpu.compute_framework;
+  GPU_BLOCK_SIZE gpu_bsize;
+  cl_int status;
+
+  for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+    status = clReleaseKernel(opencl->inter_pred_and_rd_calc[gpu_bsize]);
+    if (status != CL_SUCCESS)
+      goto fail;
+  }
+
+  status = clReleaseCommandQueue(opencl->cmd_queue);
+  if (status != CL_SUCCESS)
+    goto fail;
+
+  status = clReleaseContext(opencl->context);
+  if (status != CL_SUCCESS)
+    goto fail;
+  printf("\nOpenCL Remove successful\n");
+  return;
+fail:
+  printf("\nOpenCL Remove FAILED\n");
+  assert(0);
+  return;
+}
+
+int vp9_opencl_init(VP9_GPU *gpu) {
+  VP9_OPENCL *opencl;
+  cl_int status;
+
+  cl_uint num_platforms = 0;
+  cl_platform_id platform;
+  cl_uint num_devices = 0;
+  cl_device_id device;
+  const cl_command_queue_properties command_queue_properties = 0;
+  cl_program program;
+  // TODO(karthick-ittiam) : Pass this prefix path as an input from testbench
+  const char *kernel_file_name= PREFIX_PATH"vp9_inter_prediction_and_rd_calc.cl";
+  // TODO(karthick-ittiam) : Fix this hardcoding
+  const char *build_options[GPU_BLOCK_SIZES] = {
+      "-DBLOCK_SIZE_IN_PIXELS=32",
+      "-DBLOCK_SIZE_IN_PIXELS=16",
+      "-DBLOCK_SIZE_IN_PIXELS=8" };
+  char *kernel_src;
+  GPU_BLOCK_SIZE gpu_bsize;
+  gpu->compute_framework = vpx_calloc(1, sizeof(VP9_OPENCL));
+  gpu->alloc_buffers = vp9_opencl_alloc_buffers;
+  gpu->free_buffers = vp9_opencl_free_buffers;
+  gpu->acquire_input_buffer = vp9_opencl_acquire_input_buffer;
+  gpu->execute = vp9_opencl_execute;
+  gpu->remove = vp9_opencl_remove;
+  opencl = gpu->compute_framework;
+
+
+  // Get the number of platforms in the system.
+  status = clGetPlatformIDs(0, NULL, &num_platforms);
+  if (status != CL_SUCCESS || num_platforms == 0)
+    goto fail;
+
+  // Get the platform ID for one platform
+  status = clGetPlatformIDs(1, &platform, NULL);
+  if (status != CL_SUCCESS)
+    goto fail;
+
+  // Get the number of devices available on the platform
+  status = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 0, NULL, &num_devices);
+  if (status != CL_SUCCESS || num_devices == 0)
+    goto fail;
+
+  // Get the device ID for one device
+  status = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, NULL);
+  if (status != CL_SUCCESS)
+    goto fail;
+
+  // Create OpenCL context for one device
+  opencl->context = clCreateContext(NULL, 1, &device, NULL, NULL, &status);
+  if (status != CL_SUCCESS || opencl->context == NULL)
+    goto fail;
+
+  // Create a command queue for the device
+  opencl->cmd_queue = clCreateCommandQueue(opencl->context, device,
+                                           command_queue_properties,
+                                           &status);
+  if (status != CL_SUCCESS || opencl->cmd_queue == NULL)
+    goto fail;
+
+
+
+  for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+    // Read kernel source files
+    kernel_src = read_src(kernel_file_name);
+    if (kernel_src == NULL)
+      goto fail;
+
+    program = clCreateProgramWithSource(opencl->context, 1,
+                                        (const char**)(void *)&kernel_src,
+                                        NULL,
+                                        &status);
+    vpx_free(kernel_src);
+    if (status != CL_SUCCESS)
+      goto fail;
+
+
+    // Build the program
+    status = clBuildProgram(program, 1, &device, build_options[gpu_bsize],
+                            NULL, NULL);
+    if (status != CL_SUCCESS) {
+    // Enable this if you are a OpenCL developer and need to print the build
+    // errors of the OpenCL kernel
+#if OPENCL_DEVELOPER_MODE
+      uint8_t *build_log;
+      size_t build_log_size;
+
+      clGetProgramBuildInfo(program,
+          device,
+          CL_PROGRAM_BUILD_LOG,
+          0,
+          NULL,
+          &build_log_size);
+      build_log = (uint8_t*)vpx_malloc(build_log_size);
+      if (build_log == NULL)
+        goto fail;
+
+      clGetProgramBuildInfo(program,
+          device,
+          CL_PROGRAM_BUILD_LOG,
+          build_log_size,
+          build_log,
+          NULL);
+      build_log[build_log_size-1] = '\0';
+      fprintf(stderr, "Build Log:\n%s\n", build_log);
+      vpx_free(build_log);
+#endif
+      goto fail;
+    }
+    opencl->inter_pred_and_rd_calc[gpu_bsize] = clCreateKernel(
+        program, "inter_prediction_and_rd_calc", &status);
+    if (status != CL_SUCCESS)
+      goto fail;
+  }
+
+  return 0;
+fail:
+  return 1;
+}
+

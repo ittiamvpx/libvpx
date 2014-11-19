@@ -76,11 +76,13 @@ typedef struct GPU_RD_PARAMETERS {
 typedef struct VP9_GPU {
   void *compute_framework;
   void (*alloc_buffers)(struct VP9_COMP *cpi);
+  void (*free_buffers)(struct VP9_COMP *cpi);
   void *(*acquire_input_buffer)(struct VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize);
   void (*execute)(struct VP9_COMP *cpi, uint8_t* reference_frame,
                   uint8_t* current_frame, GPU_INPUT *gpu_input,
                   GPU_OUTPUT **gpu_output, GPU_RD_PARAMETERS *gpu_rd_parameters,
                   GPU_BLOCK_SIZE gpu_bsize);
+  void (*remove)(struct VP9_COMP *cpi);
   GPU_INPUT *gpu_input[GPU_BLOCK_SIZES];
 } VP9_GPU;
 

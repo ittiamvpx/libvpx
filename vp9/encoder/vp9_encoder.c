@@ -207,6 +207,11 @@ static void dealloc_compressor_data(VP9_COMP *cpi) {
   vp9_free_frame_buffer(&cpi->alt_ref_buffer);
   vp9_lookahead_destroy(cpi->lookahead);
 
+#if CONFIG_GPU_COMPUTE
+    if (cm->use_gpu)
+      cpi->gpu.free_buffers(cpi);
+#endif
+
   vpx_free(cpi->tok);
   cpi->tok = 0;
 
@@ -1219,6 +1224,11 @@ void vp9_remove_compressor(VP9_COMP *cpi) {
   if (cpi->use_fp_mb_stats) {
     vpx_free(cpi->twopass.frame_mb_stats_buf);
     cpi->twopass.frame_mb_stats_buf = NULL;
+  }
+#endif
+#if CONFIG_GPU_COMPUTE
+  if (cpi->common.use_gpu) {
+    cpi->gpu.remove(cpi);
   }
 #endif
 
