@@ -166,10 +166,8 @@ static void vp9_opencl_free_buffers(VP9_COMP *cpi) {
       goto fail;
   }
 
-  printf("\nOpenCL Free successful\n");
   return;
 fail:
-  printf("\nOpenCL Free FAILED\n");
   assert(0);
   return;
 }
@@ -310,10 +308,8 @@ static void vp9_opencl_remove(VP9_COMP *cpi) {
   status = clReleaseContext(opencl->context);
   if (status != CL_SUCCESS)
     goto fail;
-  printf("\nOpenCL Remove successful\n");
   return;
 fail:
-  printf("\nOpenCL Remove FAILED\n");
   assert(0);
   return;
 }
