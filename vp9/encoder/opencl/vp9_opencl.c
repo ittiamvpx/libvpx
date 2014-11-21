@@ -60,6 +60,8 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
   cl_int status;
   cl_int stride = cm->frame_bufs[0].buf.y_stride;
   GPU_BLOCK_SIZE gpu_bsize;
+  cl_int mi_rows = cm->mi_rows;
+  cl_int mi_cols = cm->mi_cols;
 
   opencl->current_frame_size = cpi->lookahead->buf->img.buffer_alloc_sz;
   opencl->current_frame = clCreateBuffer(opencl->context,
@@ -80,7 +82,7 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
     goto fail;
 
   opencl->rd_parameters = clCreateBuffer(opencl->context,
-                                         CL_MEM_READ_ONLY,
+                                         CL_MEM_READ_ONLY | CL_MEM_ALLOC_HOST_PTR,
                                          sizeof(GPU_RD_PARAMETERS),
                                          NULL,
                                          &status);
@@ -90,8 +92,28 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
   for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
     const BLOCK_SIZE bsize = get_actual_block_size(gpu_bsize);
     const int block_cols = (cm->sb_cols * num_mxn_blocks_wide_lookup[bsize]);
-    const int block_rows = (cm->sb_cols * num_mxn_blocks_wide_lookup[bsize]);
+    const int block_rows = (cm->sb_rows * num_mxn_blocks_high_lookup[bsize]);
     const int alloc_size = block_cols * block_rows;
+
+    opencl->input_mv_stage1_size[gpu_bsize] = alloc_size * sizeof(GPU_INPUT_STAGE1);
+    opencl->input_mv_stage1[gpu_bsize] = clCreateBuffer(
+            opencl->context,
+            CL_MEM_READ_ONLY | CL_MEM_ALLOC_HOST_PTR,
+            opencl->input_mv_stage1_size[gpu_bsize],
+            NULL,
+            &status);
+    if (status != CL_SUCCESS || opencl->input_mv_stage1[gpu_bsize] == (cl_mem)0)
+      goto fail;
+
+    opencl->output_mv_stage1_size[gpu_bsize] = alloc_size * sizeof(GPU_OUTPUT_STAGE1);
+    opencl->output_mv_stage1[gpu_bsize] = clCreateBuffer(
+            opencl->context,
+            CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR,
+            opencl->output_mv_stage1_size[gpu_bsize],
+            NULL,
+            &status);
+    if (status != CL_SUCCESS || opencl->output_mv_stage1[gpu_bsize] == (cl_mem)0)
+      goto fail;
 
     opencl->input_mv_size[gpu_bsize] = alloc_size * sizeof(GPU_INPUT);
     opencl->input_mv[gpu_bsize] = clCreateBuffer(
@@ -111,6 +133,36 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
         NULL,
         &status);
     if (status != CL_SUCCESS || opencl->output_rd[gpu_bsize] == (cl_mem)0)
+      goto fail;
+
+    status  = clSetKernelArg(opencl->full_pel_and_sub_pel[gpu_bsize], 0,
+                            sizeof(cl_mem), &opencl->reference_frame);
+    status |= clSetKernelArg(opencl->full_pel_and_sub_pel[gpu_bsize], 1,
+                             sizeof(cl_mem), &opencl->current_frame);
+    status |= clSetKernelArg(opencl->full_pel_and_sub_pel[gpu_bsize], 2,
+                             sizeof(cl_int), &stride);
+    status |= clSetKernelArg(opencl->full_pel_and_sub_pel[gpu_bsize], 3,
+                             sizeof(cl_mem), &opencl->output_mv_stage1[gpu_bsize]);
+    status |= clSetKernelArg(opencl->full_pel_and_sub_pel[gpu_bsize], 4,
+                             sizeof(cl_mem),
+                             &opencl->input_mv_stage1[gpu_bsize]);
+    // For 32x32 block this parameter is ignored. Used only for other block
+    // sizes
+    if (gpu_bsize == 0)
+      status |= clSetKernelArg(opencl->full_pel_and_sub_pel[gpu_bsize], 5,
+                               sizeof(cl_mem), &opencl->output_mv_stage1[0]);
+    else
+      status |= clSetKernelArg(opencl->full_pel_and_sub_pel[gpu_bsize], 5,
+                               sizeof(cl_mem),
+                               &opencl->output_mv_stage1[gpu_bsize - 1]);
+
+    status |= clSetKernelArg(opencl->full_pel_and_sub_pel[gpu_bsize], 6,
+                             sizeof(cl_mem), &opencl->rd_parameters);
+    status |= clSetKernelArg(opencl->full_pel_and_sub_pel[gpu_bsize], 7,
+                             sizeof(cl_int), &mi_rows);
+    status |= clSetKernelArg(opencl->full_pel_and_sub_pel[gpu_bsize], 8,
+                             sizeof(cl_int), &mi_cols);
+    if (status != CL_SUCCESS)
       goto fail;
 
     status  = clSetKernelArg(opencl->inter_pred_and_rd_calc[gpu_bsize], 0,
@@ -158,7 +210,13 @@ static void vp9_opencl_free_buffers(VP9_COMP *cpi) {
     goto fail;
 
   for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+    status = clReleaseMemObject(opencl->input_mv_stage1[gpu_bsize]);
+    if (status != CL_SUCCESS)
+      goto fail;
     status = clReleaseMemObject(opencl->input_mv[gpu_bsize]);
+    if (status != CL_SUCCESS)
+      goto fail;
+    status = clReleaseMemObject(opencl->output_mv_stage1[gpu_bsize]);
     if (status != CL_SUCCESS)
       goto fail;
     status = clReleaseMemObject(opencl->output_rd[gpu_bsize]);
@@ -172,25 +230,152 @@ fail:
   return;
 }
 
+static void *vp9_opencl_acquire_rd_parameters(VP9_COMP *cpi) {
+  VP9_OPENCL * const opencl = (VP9_OPENCL *) cpi->gpu.compute_framework;
+  cl_int status;
+  if (opencl->rd_parameters_mapped == NULL) {
+    opencl->rd_parameters_mapped = clEnqueueMapBuffer(
+        opencl->cmd_queue, opencl->rd_parameters,
+        CL_TRUE,
+        CL_MAP_READ | CL_MAP_WRITE, 0, sizeof(GPU_RD_PARAMETERS), 0, NULL, NULL,
+        &status);
+    assert(status == CL_SUCCESS);
+  }
+  return opencl->rd_parameters_mapped;
+}
+
 static void *vp9_opencl_acquire_input_buffer(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize) {
-  VP9_OPENCL *const opencl = (VP9_OPENCL *)cpi->gpu.compute_framework;
+  VP9_OPENCL *const opencl = (VP9_OPENCL *) cpi->gpu.compute_framework;
   cl_int status;
   if (opencl->input_mv_mapped[gpu_bsize] == NULL) {
     opencl->input_mv_mapped[gpu_bsize] = clEnqueueMapBuffer(
         opencl->cmd_queue, opencl->input_mv[gpu_bsize],
-        CL_TRUE, CL_MAP_READ | CL_MAP_WRITE, 0,
-        opencl->input_mv_size[gpu_bsize],
-        0, NULL, NULL,
-        &status);
+        CL_TRUE,
+        CL_MAP_READ | CL_MAP_WRITE, 0, opencl->input_mv_size[gpu_bsize], 0,
+        NULL, NULL, &status);
     assert(status == CL_SUCCESS);
   }
   return opencl->input_mv_mapped[gpu_bsize];
 }
 
-static void vp9_opencl_execute(VP9_COMP *cpi,
+static void *vp9_opencl_acquire_input_buffer_stage1(VP9_COMP *cpi,
+                                             GPU_BLOCK_SIZE gpu_bsize) {
+  VP9_OPENCL *const opencl = (VP9_OPENCL *) cpi->gpu.compute_framework;
+  cl_int status;
+  if (opencl->input_mv_stage1_mapped[gpu_bsize] == NULL) {
+    opencl->input_mv_stage1_mapped[gpu_bsize] = clEnqueueMapBuffer(
+        opencl->cmd_queue, opencl->input_mv_stage1[gpu_bsize],
+        CL_TRUE,
+        CL_MAP_READ | CL_MAP_WRITE, 0,
+        opencl->input_mv_stage1_size[gpu_bsize], 0, NULL, NULL, &status);
+    assert(status == CL_SUCCESS);
+  }
+  return opencl->input_mv_stage1_mapped[gpu_bsize];
+}
+
+static GPU_OUTPUT_STAGE1* vp9_opencl_execute_stage1(VP9_COMP *cpi, uint8_t* reference_frame,
+                               uint8_t* current_frame, GPU_BLOCK_SIZE gpu_bsize) {
+  VP9_COMMON * const cm = &cpi->common;
+  VP9_OPENCL *opencl = cpi->gpu.compute_framework;
+  cl_int status;
+  size_t local_size[2];
+  size_t global_size[2];
+  size_t MB_size[2];
+  const size_t workitem_size[2] = { NUM_PIXELS_PER_WORKITEM, 1 };
+  const BLOCK_SIZE bsize = get_actual_block_size(gpu_bsize);
+  const int b_width_in_pixels_log2 = b_width_log2(bsize) + 2;
+  const int b_height_in_pixels_log2 = b_height_log2(bsize) + 2;
+  const int b_width_mask = (1 << b_width_in_pixels_log2) - 1;
+  const int b_height_mask = (1 << b_height_in_pixels_log2) - 1;
+  int num_block_cols = cm->width >> b_width_in_pixels_log2;
+  int num_block_rows = cm->height >> b_height_in_pixels_log2;
+  const int mi_step = num_8x8_blocks_wide_lookup[bsize] / 2;
+
+  // If width or Height is not a multiple of block size, check if the
+  // last incomplete block has to be done for this bsize
+  if (cm->width & b_width_mask) {
+    const int last_mi_col = (cm->width & ~b_width_mask) >> MI_SIZE_LOG2;
+    num_block_cols =
+        last_mi_col + mi_step >= cm->mi_cols ?
+            num_block_cols : num_block_cols + 1;
+  }
+  if (cm->height & b_height_mask) {
+    const int last_mi_row = (cm->height & ~b_height_mask) >> MI_SIZE_LOG2;
+    num_block_rows =
+        last_mi_row + mi_step >= cm->mi_rows ?
+            num_block_rows : num_block_rows + 1;
+  }
+
+  //cl_event event_meta_data;
+  MB_size[0] = 1 << b_width_in_pixels_log2;
+  MB_size[1] = 1 << b_height_in_pixels_log2;
+
+  local_size[0] = MB_size[0] / workitem_size[0];
+  local_size[1] = MB_size[1] / workitem_size[1];
+
+  global_size[0] = num_block_cols * local_size[0];
+  global_size[1] = num_block_rows * local_size[1];
+
+  status = clEnqueueWriteBuffer(opencl->cmd_queue, opencl->reference_frame,
+  CL_TRUE,
+                                0, opencl->reference_frame_size,
+                                (const void *) reference_frame, 0, NULL, NULL);
+  assert(status == CL_SUCCESS);
+
+  status = clEnqueueWriteBuffer(opencl->cmd_queue, opencl->current_frame,
+  CL_TRUE,
+                                0, opencl->current_frame_size,
+                                (const void *) current_frame, 0, NULL, NULL);
+  assert(status == CL_SUCCESS);
+
+
+  if (opencl->input_mv_stage1_mapped[gpu_bsize] != NULL) {
+    status = clEnqueueUnmapMemObject(
+        opencl->cmd_queue, opencl->input_mv_stage1[gpu_bsize],
+        opencl->input_mv_stage1_mapped[gpu_bsize], 0, NULL, NULL);
+    assert(status == CL_SUCCESS);
+    opencl->input_mv_stage1_mapped[gpu_bsize] = NULL;
+  }
+
+  if (opencl->output_mv_stage1_mapped[gpu_bsize] != NULL) {
+    status = clEnqueueUnmapMemObject(opencl->cmd_queue,
+                                     opencl->output_mv_stage1[gpu_bsize],
+                                     opencl->output_mv_stage1_mapped[gpu_bsize], 0,
+                                     NULL, NULL);
+    assert(status == CL_SUCCESS);
+    opencl->output_mv_stage1_mapped[gpu_bsize] = NULL;
+  }
+
+  if (opencl->rd_parameters_mapped != NULL) {
+    status = clEnqueueUnmapMemObject(opencl->cmd_queue, opencl->rd_parameters,
+                                     opencl->rd_parameters_mapped, 0, NULL,
+                                     NULL);
+    assert(status == CL_SUCCESS);
+    opencl->rd_parameters_mapped = NULL;
+  }
+
+  /* Enqueue only when there is something to process for this kernel. */
+  status = clEnqueueNDRangeKernel(opencl->cmd_queue,
+                                  opencl->full_pel_and_sub_pel[gpu_bsize], 2,
+                                  NULL, global_size, local_size, 0, NULL, NULL);
+  assert(status == CL_SUCCESS);
+
+  if (opencl->output_mv_stage1_mapped[gpu_bsize] == NULL) {
+    opencl->output_mv_stage1_mapped[gpu_bsize] = clEnqueueMapBuffer(
+        opencl->cmd_queue, opencl->output_mv_stage1[gpu_bsize],
+        CL_TRUE,
+        CL_MAP_READ | CL_MAP_WRITE, 0, opencl->output_mv_stage1_size[gpu_bsize], 0,
+        NULL, NULL, &status);
+    assert(status == CL_SUCCESS);
+  }
+  (void) status;
+
+  return (GPU_OUTPUT_STAGE1 *)opencl->output_mv_stage1_mapped[gpu_bsize];
+
+}
+
+static GPU_OUTPUT* vp9_opencl_execute(VP9_COMP *cpi,
                         uint8_t* reference_frame, uint8_t* current_frame,
-                        GPU_INPUT *gpu_input, GPU_OUTPUT **gpu_output,
-                        GPU_RD_PARAMETERS *gpu_rd_parameters,
                         GPU_BLOCK_SIZE gpu_bsize) {
   VP9_COMMON *const cm = &cpi->common;
   VP9_OPENCL *const opencl = (VP9_OPENCL *)cpi->gpu.compute_framework;
@@ -244,19 +429,11 @@ static void vp9_opencl_execute(VP9_COMP *cpi,
                                 0, NULL, NULL);
   assert(status == CL_SUCCESS);
 
-  status = clEnqueueWriteBuffer(opencl->cmd_queue, opencl->rd_parameters,
-                                CL_TRUE, 0,
-                                sizeof(GPU_RD_PARAMETERS),
-                                (const void *) gpu_rd_parameters,
-                                0, NULL, NULL);
-  assert(status == CL_SUCCESS);
-
   if(opencl->input_mv_mapped[gpu_bsize] != NULL)
   {
-    assert(gpu_input == opencl->input_mv_mapped[gpu_bsize]);
     status = clEnqueueUnmapMemObject(opencl->cmd_queue,
                                      opencl->input_mv[gpu_bsize],
-                                     (void *) gpu_input,
+                                     opencl->input_mv_mapped[gpu_bsize],
                                      0, NULL, NULL);
     assert(status == CL_SUCCESS);
     opencl->input_mv_mapped[gpu_bsize] = NULL;
@@ -269,6 +446,15 @@ static void vp9_opencl_execute(VP9_COMP *cpi,
                                      0, NULL, NULL);
     assert(status == CL_SUCCESS);
     opencl->output_rd_mapped[gpu_bsize] = NULL;
+  }
+  if(opencl->rd_parameters_mapped != NULL)
+  {
+    status = clEnqueueUnmapMemObject(opencl->cmd_queue,
+                                     opencl->rd_parameters,
+                                     opencl->rd_parameters_mapped,
+                                     0, NULL, NULL);
+    assert(status == CL_SUCCESS);
+    opencl->rd_parameters_mapped = NULL;
   }
 
   status = clEnqueueNDRangeKernel(opencl->cmd_queue,
@@ -287,7 +473,7 @@ static void vp9_opencl_execute(VP9_COMP *cpi,
       &status);
   assert(status == CL_SUCCESS);
 
-  *gpu_output = (GPU_OUTPUT *)opencl->output_rd_mapped[gpu_bsize];
+  return opencl->output_rd_mapped[gpu_bsize];
 }
 
 static void vp9_opencl_remove(VP9_COMP *cpi) {
@@ -296,6 +482,9 @@ static void vp9_opencl_remove(VP9_COMP *cpi) {
   cl_int status;
 
   for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+    status = clReleaseKernel(opencl->full_pel_and_sub_pel[gpu_bsize]);
+    if (status != CL_SUCCESS)
+      goto fail;
     status = clReleaseKernel(opencl->inter_pred_and_rd_calc[gpu_bsize]);
     if (status != CL_SUCCESS)
       goto fail;
@@ -326,6 +515,8 @@ int vp9_opencl_init(VP9_GPU *gpu) {
   cl_program program;
   // TODO(karthick-ittiam) : Pass this prefix path as an input from testbench
   const char *kernel_file_name= PREFIX_PATH"vp9_inter_prediction_and_rd_calc.cl";
+  const char *kernel_file_name_stage1 = PREFIX_PATH"vp9_fullpel_search_32x32.cl";
+
   // TODO(karthick-ittiam) : Fix this hardcoding
   const char *build_options[GPU_BLOCK_SIZES] = {
       "-DBLOCK_SIZE_IN_PIXELS=32",
@@ -337,7 +528,10 @@ int vp9_opencl_init(VP9_GPU *gpu) {
   gpu->alloc_buffers = vp9_opencl_alloc_buffers;
   gpu->free_buffers = vp9_opencl_free_buffers;
   gpu->acquire_input_buffer = vp9_opencl_acquire_input_buffer;
+  gpu->acquire_input_buffer_stage1 = vp9_opencl_acquire_input_buffer_stage1;
+  gpu->acquire_rd_parameters = vp9_opencl_acquire_rd_parameters;
   gpu->execute = vp9_opencl_execute;
+  gpu->execute_stage1 = vp9_opencl_execute_stage1;
   gpu->remove = vp9_opencl_remove;
   opencl = gpu->compute_framework;
 
@@ -374,7 +568,58 @@ int vp9_opencl_init(VP9_GPU *gpu) {
   if (status != CL_SUCCESS || opencl->cmd_queue == NULL)
     goto fail;
 
+  for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+    // Read kernel source files
+    kernel_src = read_src(kernel_file_name_stage1);
+    if (kernel_src == NULL)
+      goto fail;
 
+    program = clCreateProgramWithSource(opencl->context, 1,
+                                        (const char**)(void *)&kernel_src,
+                                        NULL,
+                                        &status);
+    vpx_free(kernel_src);
+    if (status != CL_SUCCESS)
+      goto fail;
+
+
+    // Build the program
+    status = clBuildProgram(program, 1, &device, build_options[gpu_bsize],
+                            NULL, NULL);
+    if (status != CL_SUCCESS) {
+    // Enable this if you are a OpenCL developer and need to print the build
+    // errors of the OpenCL kernel
+#if OPENCL_DEVELOPER_MODE
+      uint8_t *build_log;
+      size_t build_log_size;
+
+      clGetProgramBuildInfo(program,
+          device,
+          CL_PROGRAM_BUILD_LOG,
+          0,
+          NULL,
+          &build_log_size);
+      build_log = (uint8_t*)vpx_malloc(build_log_size);
+      if (build_log == NULL)
+        goto fail;
+
+      clGetProgramBuildInfo(program,
+          device,
+          CL_PROGRAM_BUILD_LOG,
+          build_log_size,
+          build_log,
+          NULL);
+      build_log[build_log_size-1] = '\0';
+      fprintf(stderr, "Build Log:\n%s\n", build_log);
+      vpx_free(build_log);
+#endif
+      goto fail;
+    }
+    opencl->full_pel_and_sub_pel[gpu_bsize] = clCreateKernel(
+        program, "fullpel_search", &status);
+    if (status != CL_SUCCESS)
+      goto fail;
+  }
 
   for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
     // Read kernel source files

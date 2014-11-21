@@ -27,13 +27,25 @@ typedef struct VP9_OPENCL {
   size_t           reference_frame_size;
   cl_mem           current_frame;
   size_t           current_frame_size;
+  // Input to the GPU for Stage 1 : Full pixel and Sub-pixel search
+  cl_mem           input_mv_stage1[GPU_BLOCK_SIZES];
+  size_t           input_mv_stage1_size[GPU_BLOCK_SIZES];
+  void*            input_mv_stage1_mapped[GPU_BLOCK_SIZES];
+  // Input to the GPU for Final Stage : Inter prediction and Model RD
   cl_mem           input_mv[GPU_BLOCK_SIZES];
   size_t           input_mv_size[GPU_BLOCK_SIZES];
   void*            input_mv_mapped[GPU_BLOCK_SIZES];
+  // Output from the GPU for Stage 1 : Full pixel and Sub-pixel search
+  cl_mem           output_mv_stage1[GPU_BLOCK_SIZES];
+  size_t           output_mv_stage1_size[GPU_BLOCK_SIZES];
+  void*            output_mv_stage1_mapped[GPU_BLOCK_SIZES];
+  // Output from the GPU for Final Stage : Inter prediction and Model RD
   cl_mem           output_rd[GPU_BLOCK_SIZES];
   size_t           output_rd_size[GPU_BLOCK_SIZES];
   void*            output_rd_mapped[GPU_BLOCK_SIZES];
   cl_mem           rd_parameters;
+  void*            rd_parameters_mapped;
+  cl_kernel        full_pel_and_sub_pel[GPU_BLOCK_SIZES];
   cl_kernel        inter_pred_and_rd_calc[GPU_BLOCK_SIZES];
 } VP9_OPENCL;
 

@@ -43,6 +43,16 @@ typedef enum GPU_BLOCK_SIZE {
 #define GPU_INTER_MODES 2 // ZEROMV and NEWMV
 struct VP9_COMP;
 
+typedef struct GPU_INPUT_STAGE1 {
+  MV nearest_mv;
+  MV near_mv;
+} GPU_INPUT_STAGE1;
+
+typedef struct GPU_OUTPUT_STAGE1 {
+  MV mv;
+  int rate_mv;
+} GPU_OUTPUT_STAGE1;
+
 typedef struct GPU_INPUT {
   MV mv;
   INTERP_FILTER filter_type;
@@ -71,17 +81,23 @@ typedef struct GPU_RD_PARAMETERS {
   TX_MODE tx_mode;
   int dc_quant;
   int ac_quant;
+  int nmvsadcost[2][MV_VALS];
+  int mvcost[2][MV_VALS];
+  int sad_per_bit;
+  int error_per_bit;
 } GPU_RD_PARAMETERS;
 
 typedef struct VP9_GPU {
   void *compute_framework;
   void (*alloc_buffers)(struct VP9_COMP *cpi);
   void (*free_buffers)(struct VP9_COMP *cpi);
+  void *(*acquire_input_buffer_stage1)(struct VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize);
   void *(*acquire_input_buffer)(struct VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize);
-  void (*execute)(struct VP9_COMP *cpi, uint8_t* reference_frame,
-                  uint8_t* current_frame, GPU_INPUT *gpu_input,
-                  GPU_OUTPUT **gpu_output, GPU_RD_PARAMETERS *gpu_rd_parameters,
-                  GPU_BLOCK_SIZE gpu_bsize);
+  void *(*acquire_rd_parameters)(struct VP9_COMP *cpi);
+  GPU_OUTPUT_STAGE1 * (*execute_stage1)(struct VP9_COMP *cpi, uint8_t* reference_frame,
+                         uint8_t* current_frame, GPU_BLOCK_SIZE gpu_bsize);
+  GPU_OUTPUT *(*execute)(struct VP9_COMP *cpi, uint8_t* reference_frame,
+                         uint8_t* current_frame, GPU_BLOCK_SIZE gpu_bsize);
   void (*remove)(struct VP9_COMP *cpi);
   GPU_INPUT *gpu_input[GPU_BLOCK_SIZES];
 } VP9_GPU;
@@ -110,9 +126,11 @@ int vp9_gpu_init(VP9_GPU *gpu);
 void vp9_gpu_set_mvinfo_offsets(VP9_COMMON *const cm, MACROBLOCKD *const xd,
                                 int mi_row, int mi_col, BLOCK_SIZE bsize);
 
-void vp9_gpu_copy_rd_parameters(struct VP9_COMP *cpi, MACROBLOCK *const x,
-                               GPU_RD_PARAMETERS *gpu_rd_constants,
-                               GPU_BLOCK_SIZE gpu_bsize);
+void vp9_gpu_fill_rd_parameters_common(struct VP9_COMP *cpi, MACROBLOCK *const x);
+
+void vp9_gpu_fill_rd_parameters_block(struct VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize);
+
+void vp9_gpu_fill_mv_input(struct VP9_COMP *cpi, const TileInfo * const tile);
 
 void vp9_gpu_copy_output(struct VP9_COMP *cpi, MACROBLOCK *const x,
                          GPU_BLOCK_SIZE gpu_bsize, GPU_OUTPUT *gpu_output);

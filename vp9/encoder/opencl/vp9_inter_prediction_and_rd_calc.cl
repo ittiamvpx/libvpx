@@ -130,8 +130,12 @@ typedef enum {
 #define INTER_MODE_CONTEXTS 7
 #define GPU_INTER_MODES 2 // ZEROMV and NEWMV
 #define SWITCHABLE_FILTERS 3   // number of switchable filters
-    
 #define MAX_MODES 30
+#define MV_CLASSES     11
+#define CLASS0_BITS    1  /* bits at integer precision for class 0 */
+#define MV_MAX_BITS    (MV_CLASSES + CLASS0_BITS + 2)
+#define MV_MAX         ((1 << MV_MAX_BITS) - 1)
+#define MV_VALS        ((MV_MAX << 1) + 1)
     
 #define INTER_MODES (1 + NEWMV - NEARESTMV)                  
 #define INTER_OFFSET(mode) ((mode) - NEARESTMV)
@@ -328,7 +332,7 @@ typedef struct GPU_OUTPUT {
   TX_SIZE tx_size;
 } GPU_OUTPUT;
 
-typedef struct GPU_RD_CONSTANTS {
+typedef struct GPU_RD_PARAMETERS {
   int rd_mult;
   int rd_div;
   int switchable_interp_costs[SWITCHABLE_FILTERS];
@@ -338,7 +342,11 @@ typedef struct GPU_RD_CONSTANTS {
   TX_MODE tx_mode;    
   int dc_quant;
   int ac_quant;
-} GPU_RD_CONSTANTS;
+  int nmvsadcost[2][MV_VALS];
+  int mvcost[2][MV_VALS];
+  int sad_per_bit;
+  int error_per_bit;
+} GPU_RD_PARAMETERS;
 
 
 uchar8 motion_comp(__global uchar *ref_data,
@@ -478,7 +486,7 @@ void inter_prediction_and_rd_calc(__global uchar *ref_frame,
     int stride,
     __global GPU_INPUT *mv_input,
     __global GPU_OUTPUT *sse_variance_output,
-    __global GPU_RD_CONSTANTS *rd_constants 
+    __global GPU_RD_PARAMETERS *rd_constants 
 ) {
 
   __global uchar *ref_data;

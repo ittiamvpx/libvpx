@@ -3532,15 +3532,33 @@ static void vp9_gpu_mv_compute(VP9_COMP *cpi, MACROBLOCK *const x) {
   const YV12_BUFFER_CONFIG *reference_frame = get_ref_frame_buffer(cpi,
                                                                    LAST_FRAME);
   const YV12_BUFFER_CONFIG *current_frame = cpi->Source;
-  GPU_RD_PARAMETERS gpu_rd_constants;
   GPU_BLOCK_SIZE gpu_bsize;
-
-  for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
-    gpu->gpu_input[gpu_bsize] = gpu->acquire_input_buffer(cpi, gpu_bsize);
-  }
 #endif
 
   x->data_parallel_processing = 1;
+
+#if CONFIG_GPU_COMPUTE
+  for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+    gpu->gpu_input[gpu_bsize] = gpu->acquire_input_buffer(cpi, gpu_bsize);
+  }
+  vp9_gpu_fill_rd_parameters_common(cpi, x);
+  for (tile_row = 0; tile_row < tile_rows; ++tile_row) {
+    for (tile_col = 0; tile_col < tile_cols; ++tile_col) {
+      TileInfo tile;
+
+      vp9_tile_init(&tile, cm, tile_row, tile_col);
+      vp9_gpu_fill_mv_input(cpi, &tile);
+    }
+  }
+  // TODO(rakesh-ittiam) : Only 32x32 block is right now done on GPU. Soon other
+  // block sizes should also be moved to GPU.
+  cpi->out_mv_stage1[GPU_BLOCK_32X32] = gpu->execute_stage1(
+      cpi, reference_frame->buffer_alloc, current_frame->buffer_alloc,
+      GPU_BLOCK_32X32);
+
+#endif
+
+
   for (tile_row = 0; tile_row < tile_rows; ++tile_row) {
     for (tile_col = 0; tile_col < tile_cols; ++tile_col) {
       TileInfo tile;
@@ -3556,11 +3574,10 @@ static void vp9_gpu_mv_compute(VP9_COMP *cpi, MACROBLOCK *const x) {
 #if CONFIG_GPU_COMPUTE
   for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
 
-    vp9_gpu_copy_rd_parameters(cpi, x, &gpu_rd_constants, gpu_bsize);
+    vp9_gpu_fill_rd_parameters_block(cpi, gpu_bsize);
 
-    gpu->execute(cpi, reference_frame->buffer_alloc,
-                 current_frame->buffer_alloc, gpu->gpu_input[gpu_bsize],
-                 &gpu_output[gpu_bsize], &gpu_rd_constants, gpu_bsize);
+    gpu_output[gpu_bsize] = gpu->execute(cpi, reference_frame->buffer_alloc,
+                                         current_frame->buffer_alloc, gpu_bsize);
 
     vp9_gpu_copy_output(cpi, x, gpu_bsize, gpu_output[gpu_bsize]);
   }

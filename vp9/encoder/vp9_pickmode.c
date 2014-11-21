@@ -34,15 +34,6 @@ typedef struct {
   int in_use;
 } PRED_BUFFER;
 
-static void vp9_find_mv_refs_rt(const VP9_COMMON *cm, const MACROBLOCK *x,
-                                 const TileInfo *const tile,
-                                 MODE_INFO *mi, MV_REFERENCE_FRAME ref_frame,
-                                 int_mv *mv_ref_list,
-                                 int mi_row, int mi_col) {
-  find_mv_refs_idx(cm, &x->e_mbd, tile, mi, ref_frame, mv_ref_list, -1,
-                   mi_row, mi_col, x->data_parallel_processing);
-}
-
 static int mv_refs_rt(const VP9_COMMON *cm, const MACROBLOCKD *xd,
                       const TileInfo *const tile,
                       MODE_INFO *mi, MV_REFERENCE_FRAME ref_frame,
@@ -623,13 +614,21 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
       if (this_mode == NEWMV) {
         if (this_rd < (int64_t)(1 << num_pels_log2_lookup[bsize]))
           continue;
-        if (!combined_motion_search(cpi, x, bsize, mi_row, mi_col,
-                                    &frame_mv[NEWMV][ref_frame],
-                                    &rate_mv, best_rd)) {
-          // Signal the GPU to skip further NEWMV computations
-          if (cm->use_gpu && gpu_input)
-            gpu_input->do_newmv = 0;
-          continue;
+        if (!(cm->use_gpu && gpu_input && bsize == BLOCK_32X32)) {
+          if (!combined_motion_search(cpi, x, bsize, mi_row, mi_col,
+                                      &frame_mv[NEWMV][ref_frame], &rate_mv,
+                                      best_rd)) {
+            // Signal the GPU to skip further NEWMV computations
+            if (cm->use_gpu && gpu_input)
+              gpu_input->do_newmv = 0;
+            continue;
+          }
+        } else {
+          GPU_OUTPUT_STAGE1 *out_mv = cpi->out_mv_stage1[gpu_bsize]
+              + get_gpu_buffer_index(cm, mi_row, mi_col, bsize);
+          rate_mv = out_mv->rate_mv;
+          x->pred_mv[ref_frame] = out_mv->mv;
+          frame_mv[this_mode][ref_frame].as_mv = out_mv->mv;
         }
       }
 
