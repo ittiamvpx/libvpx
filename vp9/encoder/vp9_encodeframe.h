@@ -33,6 +33,9 @@ void vp9_setup_src_planes(struct macroblock *x,
 
 int encoding_thread_process(thread_context *const thread_ctxt, void* data2);
 
+int is_background(const VP9_COMP *cpi, const TileInfo *const tile,
+                         int mi_row, int mi_col);
+
 void vp9_encode_frame(struct VP9_COMP *cpi);
 
 #ifdef __cplusplus

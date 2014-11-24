@@ -43,25 +43,18 @@ typedef enum GPU_BLOCK_SIZE {
 #define GPU_INTER_MODES 2 // ZEROMV and NEWMV
 struct VP9_COMP;
 
-typedef struct GPU_INPUT_STAGE1 {
+typedef struct GPU_INPUT {
   MV nearest_mv;
   MV near_mv;
-} GPU_INPUT_STAGE1;
-
-typedef struct GPU_OUTPUT_STAGE1 {
-  MV mv;
-  int rate_mv;
-} GPU_OUTPUT_STAGE1;
-
-typedef struct GPU_INPUT {
-  MV mv;
   INTERP_FILTER filter_type;
   int mode_context;
   int rate_mv;
   int do_newmv;
+  int do_compute;
 } GPU_INPUT;
 
 typedef struct GPU_OUTPUT {
+  MV mv;
   int returnrate;
   int64_t returndistortion;
   int64_t best_rd;
@@ -85,21 +78,20 @@ typedef struct GPU_RD_PARAMETERS {
   int mvcost[2][MV_VALS];
   int sad_per_bit;
   int error_per_bit;
+  int nmvjointcost[MV_JOINTS];
 } GPU_RD_PARAMETERS;
 
 typedef struct VP9_GPU {
   void *compute_framework;
   void (*alloc_buffers)(struct VP9_COMP *cpi);
   void (*free_buffers)(struct VP9_COMP *cpi);
-  void *(*acquire_input_buffer_stage1)(struct VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize);
   void *(*acquire_input_buffer)(struct VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize);
   void *(*acquire_rd_parameters)(struct VP9_COMP *cpi);
-  GPU_OUTPUT_STAGE1 * (*execute_stage1)(struct VP9_COMP *cpi, uint8_t* reference_frame,
-                         uint8_t* current_frame, GPU_BLOCK_SIZE gpu_bsize);
   GPU_OUTPUT *(*execute)(struct VP9_COMP *cpi, uint8_t* reference_frame,
                          uint8_t* current_frame, GPU_BLOCK_SIZE gpu_bsize);
   void (*remove)(struct VP9_COMP *cpi);
   GPU_INPUT *gpu_input[GPU_BLOCK_SIZES];
+  GPU_OUTPUT *gpu_output[GPU_BLOCK_SIZES];
 } VP9_GPU;
 
 extern const BLOCK_SIZE vp9_actual_block_size_lookup[GPU_BLOCK_SIZES];

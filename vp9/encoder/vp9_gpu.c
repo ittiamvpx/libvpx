@@ -14,6 +14,7 @@
 #include "vp9/common/vp9_mvref_common.h"
 
 #include "vp9/encoder/vp9_encoder.h"
+#include "vp9/encoder/vp9_encodeframe.h"
 #include "vp9/encoder/vp9_gpu.h"
 
 #if CONFIG_OPENCL
@@ -92,6 +93,9 @@ void vp9_gpu_fill_rd_parameters_common(VP9_COMP *cpi, MACROBLOCK *const x)
              sizeof(gpu_rd_parameters->mvcost[1]));
   gpu_rd_parameters->sad_per_bit = cpi->mb.sadperbit16;
   gpu_rd_parameters->error_per_bit = cpi->mb.errorperbit;
+  for(i = 0; i < MV_JOINTS; i++) {
+    gpu_rd_parameters->nmvjointcost[i] = x->nmvjointcost[i];
+  }
 }
 
 void vp9_gpu_fill_rd_parameters_block(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize)
@@ -106,6 +110,7 @@ void vp9_gpu_fill_rd_parameters_block(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize)
 }
 
 void vp9_gpu_fill_mv_input(VP9_COMP *cpi, const TileInfo * const tile) {
+  SPEED_FEATURES *const sf = &cpi->sf;
   int mi_row, mi_col;
   int mi_width, mi_height;
   VP9_GPU *gpu = &cpi->gpu;
@@ -115,21 +120,25 @@ void vp9_gpu_fill_mv_input(VP9_COMP *cpi, const TileInfo * const tile) {
   MB_MODE_INFO *mbmi = &xd->mi[0]->mbmi;
   MV_REFERENCE_FRAME ref_frame = LAST_FRAME;
   int_mv *const candidates = mbmi->ref_mvs[ref_frame];
-  GPU_INPUT_STAGE1 *value_meta_data;
+  GPU_INPUT *gpu_input_base;
   GPU_BLOCK_SIZE gpu_bsize;
 
   for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; ++gpu_bsize) {
     const BLOCK_SIZE bsize = get_actual_block_size(gpu_bsize);
     const int mi_row_step = num_8x8_blocks_high_lookup[bsize];
     const int mi_col_step = num_8x8_blocks_wide_lookup[bsize];
-    value_meta_data = gpu->acquire_input_buffer_stage1(cpi, gpu_bsize);
+    gpu_input_base        = gpu->acquire_input_buffer(cpi, gpu_bsize);
 
     for (mi_row = tile->mi_row_start; mi_row < tile->mi_row_end; mi_row +=
         mi_row_step) {
       for (mi_col = tile->mi_col_start; mi_col < tile->mi_col_end; mi_col +=
           mi_col_step) {
-        GPU_INPUT_STAGE1 *meta_data = value_meta_data
+        GPU_INPUT *gpu_input = gpu_input_base
             + get_gpu_buffer_index(cm, mi_row, mi_col, bsize);
+        const int bsl = mi_width_log2(bsize);
+        const int pred_filter_search = cm->interp_filter == SWITCHABLE ?
+            (((mi_row + mi_col) >> bsl) +
+             get_chessboard_index(cm->current_video_frame)) & 0x1 : 0;
 
         const int ms = num_8x8_blocks_wide_lookup[bsize] / 2;
         const int force_horz_split = (mi_row + ms >= cm->mi_rows);
@@ -161,12 +170,61 @@ void vp9_gpu_fill_mv_input(VP9_COMP *cpi, const TileInfo * const tile) {
                             mi_row, mi_col);
 
         vp9_find_best_ref_mvs(xd, cm->allow_high_precision_mv, candidates,
-                              (int_mv *)&meta_data->nearest_mv,
-                              (int_mv *)&meta_data->near_mv);
+                              (int_mv *)&gpu_input->nearest_mv,
+                              (int_mv *)&gpu_input->near_mv);
 
-        clamp_mv2(&meta_data->nearest_mv, xd);
-        clamp_mv2(&meta_data->near_mv, xd);
+        clamp_mv2(&gpu_input->nearest_mv, xd);
+        clamp_mv2(&gpu_input->near_mv, xd);
 
+        gpu_input->do_newmv     = 1;
+        gpu_input->do_compute   = 1;
+        gpu_input->mode_context = mbmi->mode_context[ref_frame];
+
+        if(pred_filter_search)
+          gpu_input->filter_type = SWITCHABLE;
+        else
+          gpu_input->filter_type = EIGHTTAP;
+
+
+      }
+    }
+  }
+  for (mi_row = tile->mi_row_start; mi_row < tile->mi_row_end; mi_row +=
+      MI_BLOCK_SIZE) {
+    for (mi_col = tile->mi_col_start; mi_col < tile->mi_col_end; mi_col +=
+        MI_BLOCK_SIZE) {
+      const int is_static_area = is_background(cpi, tile, mi_row, mi_col);
+
+      if (!sf->partition_check && is_static_area) {
+        for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; ++gpu_bsize) {
+          const BLOCK_SIZE bsize = get_actual_block_size(gpu_bsize);
+          GPU_INPUT *gpu_input_base = gpu->acquire_input_buffer(cpi, gpu_bsize);
+          const int mi_row_step = num_8x8_blocks_high_lookup[bsize];
+          const int mi_col_step = num_8x8_blocks_wide_lookup[bsize];
+          int block_row, block_col;
+
+          for (block_row = 0; block_row < MI_BLOCK_SIZE; block_row +=
+              mi_row_step) {
+            for (block_col = 0; block_col < MI_BLOCK_SIZE; block_col +=
+                mi_col_step) {
+
+              const int actual_mi_row = mi_row + block_row;
+              const int actual_mi_col = mi_col + block_col;
+              const int idx_str = cm->mi_stride * actual_mi_row + actual_mi_col;
+              MODE_INFO **prev_mi = cm->prev_mi_grid_visible + idx_str;
+              if(actual_mi_row >= cm->mi_rows || actual_mi_col >= cm->mi_cols)
+                break;
+              assert(prev_mi[0] != NULL);
+
+              if (prev_mi[0]->mbmi.sb_type != bsize) {
+                GPU_INPUT *gpu_input = gpu_input_base
+                    + get_gpu_buffer_index(cm, actual_mi_row, actual_mi_col,
+                                           bsize);
+                gpu_input->do_compute = 0;
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -213,6 +271,8 @@ void vp9_gpu_copy_output(VP9_COMP *cpi, MACROBLOCK *const x,
       xd->gpu_mvinfo[bsize]->segment_id   = 0;
       if (xd->gpu_mvinfo[bsize]->mode == ZEROMV)
         xd->gpu_mvinfo[bsize]->mv[0].as_int = 0;
+      else
+        xd->gpu_mvinfo[bsize]->mv[0].as_mv  = gpu_output_block->mv;
     }
   }
 }

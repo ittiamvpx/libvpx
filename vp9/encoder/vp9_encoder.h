@@ -434,7 +434,6 @@ typedef struct VP9_COMP {
 #endif
 #if CONFIG_GPU_COMPUTE
   VP9_GPU gpu;
-  GPU_OUTPUT_STAGE1 *out_mv_stage1[BLOCK_SIZES];
 #endif
 } VP9_COMP;
 

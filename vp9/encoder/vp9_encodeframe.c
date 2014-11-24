@@ -1253,7 +1253,7 @@ static void set_source_var_based_partition(VP9_COMP *cpi, MACROBLOCK *const x,
   }
 }
 
-static int is_background(const VP9_COMP *cpi, const TileInfo *const tile,
+int is_background(const VP9_COMP *cpi, const TileInfo *const tile,
                          int mi_row, int mi_col) {
   // This assumes the input source frames are of the same dimension.
   const int row8x8_remaining = tile->mi_row_end - mi_row;
@@ -3059,6 +3059,8 @@ static void nonrd_use_partition(VP9_COMP *cpi, MACROBLOCK *const x,
 
   subsize = (bsize >= BLOCK_8X8) ? mi[0]->mbmi.sb_type : BLOCK_4X4;
   partition = partition_lookup[bsl][subsize];
+  if(x->data_parallel_processing)
+    vp9_zero(x->pred_mv);
 
   switch (partition) {
     case PARTITION_NONE:
@@ -3075,6 +3077,8 @@ static void nonrd_use_partition(VP9_COMP *cpi, MACROBLOCK *const x,
       pc_tree->vertical[0].skip_txfm[0] = x->skip_txfm[0];
       pc_tree->vertical[0].skip = x->skip;
       if (mi_col + hbs < cm->mi_cols) {
+        if(x->data_parallel_processing)
+          vp9_zero(x->pred_mv);
         nonrd_pick_sb_modes(cpi, x, tile, mi_row, mi_col + hbs,
                             &rate, &dist, subsize, &pc_tree->vertical[1]);
         pc_tree->vertical[1].mic.mbmi = xd->mi[0]->mbmi;
@@ -3094,6 +3098,8 @@ static void nonrd_use_partition(VP9_COMP *cpi, MACROBLOCK *const x,
       pc_tree->horizontal[0].skip_txfm[0] = x->skip_txfm[0];
       pc_tree->horizontal[0].skip = x->skip;
       if (mi_row + hbs < cm->mi_rows) {
+        if(x->data_parallel_processing)
+          vp9_zero(x->pred_mv);
         nonrd_pick_sb_modes(cpi, x, tile, mi_row + hbs, mi_col,
                             &rate, &dist, subsize, &pc_tree->horizontal[0]);
         pc_tree->horizontal[1].mic.mbmi = xd->mi[0]->mbmi;
@@ -3528,7 +3534,6 @@ static void vp9_gpu_mv_compute(VP9_COMP *cpi, MACROBLOCK *const x) {
   int tile_col, tile_row;
 #if CONFIG_GPU_COMPUTE
   VP9_GPU * const gpu = &cpi->gpu;
-  GPU_OUTPUT *gpu_output[GPU_BLOCK_SIZES];
   const YV12_BUFFER_CONFIG *reference_frame = get_ref_frame_buffer(cpi,
                                                                    LAST_FRAME);
   const YV12_BUFFER_CONFIG *current_frame = cpi->Source;
@@ -3550,11 +3555,13 @@ static void vp9_gpu_mv_compute(VP9_COMP *cpi, MACROBLOCK *const x) {
       vp9_gpu_fill_mv_input(cpi, &tile);
     }
   }
-  // TODO(rakesh-ittiam) : Only 32x32 block is right now done on GPU. Soon other
-  // block sizes should also be moved to GPU.
-  cpi->out_mv_stage1[GPU_BLOCK_32X32] = gpu->execute_stage1(
-      cpi, reference_frame->buffer_alloc, current_frame->buffer_alloc,
-      GPU_BLOCK_32X32);
+  for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+    vp9_gpu_fill_rd_parameters_block(cpi, gpu_bsize);
+    cpi->gpu.gpu_output[gpu_bsize] = gpu->execute(cpi,
+                                                  reference_frame->buffer_alloc,
+                                                  current_frame->buffer_alloc,
+                                                  gpu_bsize);
+  }
 
 #endif
 
@@ -3573,13 +3580,7 @@ static void vp9_gpu_mv_compute(VP9_COMP *cpi, MACROBLOCK *const x) {
   x->data_parallel_processing = 0;
 #if CONFIG_GPU_COMPUTE
   for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
-
-    vp9_gpu_fill_rd_parameters_block(cpi, gpu_bsize);
-
-    gpu_output[gpu_bsize] = gpu->execute(cpi, reference_frame->buffer_alloc,
-                                         current_frame->buffer_alloc, gpu_bsize);
-
-    vp9_gpu_copy_output(cpi, x, gpu_bsize, gpu_output[gpu_bsize]);
+    vp9_gpu_copy_output(cpi, x, gpu_bsize, cpi->gpu.gpu_output[gpu_bsize]);
   }
 #endif
 }
