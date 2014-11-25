@@ -438,6 +438,7 @@ typedef struct GPU_INPUT {
 
 typedef struct GPU_OUTPUT {
   MV mv;
+  int rate_mv;
   int          returnrate;
   int64_t      returndistortion;
   int64_t      best_rd;
@@ -1357,7 +1358,7 @@ void vp9_model_rd_from_var_lapndz(unsigned int var, unsigned int n,
 }
 
 __kernel
-void vp9_pick_inter_mode(__global uchar *ref_frame,
+void vp9_pick_inter_mode_part1(__global uchar *ref_frame,
     __global uchar *cur_frame,
     int stride,
     __global GPU_INPUT *mv_input,
@@ -1461,12 +1462,18 @@ void vp9_pick_inter_mode(__global uchar *ref_frame,
       best_tx_size = tx_size;
     }
     if (this_rd < (int64_t)(1 << num_pels_log2_lookup[bsize]))
+    {
+      mv_input->do_newmv = 0;
       goto exit;
+    }
     int mode_rd_thresh =
         rd_parameters->threshes[mode_idx[0][INTER_OFFSET(NEWMV)]];
     if (rd_less_than_thresh(best_rd, mode_rd_thresh,
             rd_parameters->thresh_fact_newmv))
+    {
+      mv_input->do_newmv = 0;
       goto exit;
+    }
   }
 
   int do_newmv = combined_motion_search(ref_frame,
@@ -1482,11 +1489,114 @@ void vp9_pick_inter_mode(__global uchar *ref_frame,
                   intermediate_ushort);
 
   if (!do_newmv)
+    mv_input->do_newmv = 0;
+  
+  sse_variance_output->rate_mv = out_mv.rate_mv;
+ 
+exit:
+  sse_variance_output->mv = out_mv.mv;
+  sse_variance_output->returnrate = best_rate;
+  sse_variance_output->returndistortion = best_dist;
+  sse_variance_output->best_rd = best_rd;
+  sse_variance_output->best_mode = best_mode;
+  sse_variance_output->best_pred_filter = best_pred_filter;
+  sse_variance_output->skip_txfm = best_skip_txfm;
+  sse_variance_output->tx_size = best_tx_size;
+  return;
+}
+
+__kernel
+void vp9_pick_inter_mode_part2(__global uchar *ref_frame,
+    __global uchar *cur_frame,
+    int stride,
+    __global GPU_INPUT *mv_input,
+    __global GPU_OUTPUT *sse_variance_output,
+    __global GPU_RD_PARAMETERS *rd_parameters,
+    int mi_rows,
+    int mi_cols,
+    __global GPU_OUTPUT *pred_mv
+) {
+
+  __global uchar *ref_data;
+  __local ushort intermediate_ushort[(BLOCK_SIZE_IN_PIXELS + 1) * BLOCK_SIZE_IN_PIXELS];
+  __local uchar8 intermediate_uchar8[(BLOCK_SIZE_IN_PIXELS*(BLOCK_SIZE_IN_PIXELS + 7))/NUM_PIXELS_PER_WORKITEM];
+  __local int *intermediate_int = (__local int *)intermediate_uchar8;
+
+  int global_col = get_global_id(0);
+  int global_row = get_global_id(1);
+  int global_offset = (global_row * stride) + (global_col * NUM_PIXELS_PER_WORKITEM);
+
+  int group_col = get_group_id(0);
+  int group_row = get_group_id(1);
+  int group_stride = get_num_groups(0);
+
+  int local_col = get_local_id(0);
+  int local_row = get_local_id(1);
+  int local_stride = get_local_size(0);
+
+  int sum;
+  uint sse, variance;
+  int rate, actual_rate, newmv_rate, best_rate = INT32_MAX;
+  int64_t dist, actual_dist, newmv_dist, best_dist = INT64_MAX;
+  int64_t this_rd, best_rd = INT64_MAX;
+  int newmv_skip_txfm = 0, best_skip_txfm = 0, skip_txfm;
+  TX_SIZE newmv_tx_size, best_tx_size, tx_size;
+  TX_MODE tx_mode = rd_parameters->tx_mode;
+  int dc_quant = rd_parameters->dc_quant;
+  int ac_quant = rd_parameters->ac_quant;
+
+  global_offset += (VP9_ENC_BORDER_IN_PIXELS * stride) + VP9_ENC_BORDER_IN_PIXELS;
+  mv_input      += (group_row * group_stride + group_col);
+
+#if BLOCK_SIZE_IN_PIXELS == 32
+  int bsize = BLOCK_32X32;
+#elif BLOCK_SIZE_IN_PIXELS == 16
+  int bsize = BLOCK_16X16;
+#elif BLOCK_SIZE_IN_PIXELS == 8
+  int bsize = BLOCK_8X8;
+#endif
+  best_tx_size = MIN(max_txsize_lookup[bsize],
+      tx_mode_to_biggest_tx_size[tx_mode]);
+
+  sse_variance_output += (group_row * group_stride + group_col);
+#if BLOCK_SIZE_IN_PIXELS != 32
+  pred_mv += (group_row/2 * group_stride/2 + group_col/2);
+#endif
+
+  cur_frame += global_offset;
+  uchar8 curr_data = vload8(0, cur_frame);
+  uchar8 pred_data;
+  PREDICTION_MODE best_mode = ZEROMV;
+  INTERP_FILTER newmv_filter, best_pred_filter = EIGHTTAP;
+
+  ref_data = ref_frame + global_offset;
+
+  GPU_OUTPUT_STAGE1 out_mv;
+  
+  if(!mv_input->do_compute)
+    goto exit;
+  
+  if(!mv_input->do_newmv)
     goto exit;
 
+  int mi_row = group_row * local_stride;
+  int mi_col = group_col * local_stride;
+  int mi_step = ((BLOCK_SIZE_IN_PIXELS / 8) / 2);
+  if (mi_col + mi_step >= mi_cols) {
+    goto exit;
+  }
+  if (mi_row + mi_step >= mi_rows) {
+    goto exit;
+  }
+
+  // ZEROMV not required for BLOCK_32X32
+  if (BLOCK_SIZE_IN_PIXELS != 32) {
+    best_rd = sse_variance_output->best_rd;  
+  }
+  out_mv.mv = sse_variance_output->mv;
   int mv_row = out_mv.mv.row;
   int mv_col = out_mv.mv.col;
-  int rate_mv = out_mv.rate_mv;
+  int rate_mv = sse_variance_output->rate_mv;
   int mv_offset = ((mv_row >> SUBPEL_BITS) * stride) + (mv_col >> SUBPEL_BITS);
   int horz_subpel = (mv_col & SUBPEL_MASK) << 1;
   int vert_subpel = (mv_row & SUBPEL_MASK) << 1;
@@ -1523,26 +1633,18 @@ void vp9_pick_inter_mode(__global uchar *ref_frame,
   this_rd = RDCOST(rd_parameters->rd_mult, rd_parameters->rd_div,
       newmv_rate, newmv_dist);
   if (this_rd < best_rd) {
-    best_rd = this_rd;
-    best_rate = newmv_rate;
-    best_dist = newmv_dist;
-    best_mode = NEWMV;
-    best_pred_filter = newmv_filter;
-    best_skip_txfm = newmv_skip_txfm;
-    best_tx_size = newmv_tx_size;
+    sse_variance_output->returnrate = newmv_rate;
+    sse_variance_output->returndistortion = newmv_dist;
+    sse_variance_output->best_rd = this_rd;
+    sse_variance_output->best_mode = NEWMV;
+    sse_variance_output->best_pred_filter = newmv_filter;
+    sse_variance_output->skip_txfm = newmv_skip_txfm;
+    sse_variance_output->tx_size = newmv_tx_size;
   }
+  
 exit:
-  sse_variance_output->mv = out_mv.mv;
-  sse_variance_output->returnrate = best_rate;
-  sse_variance_output->returndistortion = best_dist;
-  sse_variance_output->best_rd = best_rd;
-  sse_variance_output->best_mode = best_mode;
-  sse_variance_output->best_pred_filter = best_pred_filter;
-  sse_variance_output->skip_txfm = best_skip_txfm;
-  sse_variance_output->tx_size = best_tx_size;
+  return;
 }
-
-
 
 uchar8 inter_prediction(__global uchar *ref_data,
     int stride,

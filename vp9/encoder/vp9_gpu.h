@@ -55,6 +55,7 @@ typedef struct GPU_INPUT {
 
 typedef struct GPU_OUTPUT {
   MV mv;
+  int rate_mv;
   int returnrate;
   int64_t returndistortion;
   int64_t best_rd;
