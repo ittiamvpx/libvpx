@@ -1241,9 +1241,7 @@ int combined_motion_search(__global uchar *ref_frame,
   MV this_mv, best_mv;
   MV fcenter_mv;
   int i, mi_row, mi_col, sad_per_bit, error_per_bit;
-  INIT x, tmp_x;
-  int padding_offset;
-  int global_offset;
+  INIT x;
 
   int local_col  = get_local_id(0);
   int local_row  = get_local_id(1);
@@ -1269,14 +1267,7 @@ int combined_motion_search(__global uchar *ref_frame,
   vp9_gpu_set_mv_search_range(&x, mi_row, mi_col, mi_rows,
                               mi_cols, (BLOCK_SIZE_IN_PIXELS >> 4));
 
-  padding_offset = (VP9_ENC_BORDER_IN_PIXELS * stride) + VP9_ENC_BORDER_IN_PIXELS;
-  global_offset  = global_col * NUM_PIXELS_PER_WORKITEM + global_row * stride;
-
-  ref_frame += global_offset + padding_offset;
-  cur_frame += global_offset + padding_offset;
-
   nearest_mv = input_mv->nearest_mv;
-  tmp_x = x;
   vp9_set_mv_search_range_step2(&x, &nearest_mv);
 
   near_mv = input_mv->near_mv;
@@ -1301,15 +1292,10 @@ int combined_motion_search(__global uchar *ref_frame,
   int do_newmv = !(RDCOST(rd_parameters->rd_mult, rd_parameters->rd_div,
                          (out_stage1->rate_mv + rate_mode), 0) > best_rd_sofar);
 
-  x = tmp_x;
 
   if(do_newmv)
-    out_stage1->mv = vp9_find_best_sub_pixel_tree(ref_frame, cur_frame,
-                                          nmvcost_0, nmvcost_1, nmvjointcost,
-                                          stride,
-                                          best_mv, nearest_mv, fcenter_mv,
-                                          &x, error_per_bit,
-                                          intermediate_ushort);
+    out_stage1->mv = best_mv;
+  
   return do_newmv;
 }
 
@@ -1369,7 +1355,6 @@ void vp9_pick_inter_mode_part1(__global uchar *ref_frame,
     __global GPU_OUTPUT *pred_mv
 ) {
 
-  __global uchar *ref_data;
   __local ushort intermediate_ushort[(BLOCK_SIZE_IN_PIXELS + 1) * BLOCK_SIZE_IN_PIXELS];
   __local uchar8 intermediate_uchar8[(BLOCK_SIZE_IN_PIXELS*(BLOCK_SIZE_IN_PIXELS + 7))/NUM_PIXELS_PER_WORKITEM];
   __local int *intermediate_int = (__local int *)intermediate_uchar8;
@@ -1388,11 +1373,11 @@ void vp9_pick_inter_mode_part1(__global uchar *ref_frame,
 
   int sum;
   uint sse, variance;
-  int rate, actual_rate, newmv_rate, best_rate = INT32_MAX;
-  int64_t dist, actual_dist, newmv_dist, best_dist = INT64_MAX;
+  int rate, actual_rate;
+  int64_t dist, actual_dist;
   int64_t this_rd, best_rd = INT64_MAX;
-  int newmv_skip_txfm = 0, best_skip_txfm = 0, skip_txfm;
-  TX_SIZE newmv_tx_size, best_tx_size, tx_size;
+  int skip_txfm;
+  TX_SIZE tx_size;
   TX_MODE tx_mode = rd_parameters->tx_mode;
   int dc_quant = rd_parameters->dc_quant;
   int ac_quant = rd_parameters->ac_quant;
@@ -1407,8 +1392,6 @@ void vp9_pick_inter_mode_part1(__global uchar *ref_frame,
 #elif BLOCK_SIZE_IN_PIXELS == 8
   int bsize = BLOCK_8X8;
 #endif
-  best_tx_size = MIN(max_txsize_lookup[bsize],
-      tx_mode_to_biggest_tx_size[tx_mode]);
 
   sse_variance_output += (group_row * group_stride + group_col);
 #if BLOCK_SIZE_IN_PIXELS != 32
@@ -1421,7 +1404,7 @@ void vp9_pick_inter_mode_part1(__global uchar *ref_frame,
   PREDICTION_MODE best_mode = ZEROMV;
   INTERP_FILTER newmv_filter, best_pred_filter = EIGHTTAP;
 
-  ref_data = ref_frame + global_offset;
+  ref_frame += global_offset;
 
   GPU_OUTPUT_STAGE1 out_mv;
 
@@ -1447,7 +1430,7 @@ void vp9_pick_inter_mode_part1(__global uchar *ref_frame,
 
   // ZEROMV not required for BLOCK_32X32
   if (BLOCK_SIZE_IN_PIXELS != 32) {
-    pred_data = vload8(0, ref_data);
+    pred_data = vload8(0, ref_frame);
     CALCULATE_SSE_VAR(curr_data, pred_data)
     CALCULATE_RATE_DIST
     actual_rate += rd_parameters->inter_mode_cost[mv_input->mode_context]
@@ -1455,11 +1438,15 @@ void vp9_pick_inter_mode_part1(__global uchar *ref_frame,
     this_rd = RDCOST(rd_parameters->rd_mult, rd_parameters->rd_div,
         actual_rate, actual_dist);
     if (this_rd < best_rd) {
-      best_rd = this_rd;
-      best_rate = actual_rate;
-      best_dist = actual_dist;
-      best_skip_txfm = skip_txfm;
-      best_tx_size = tx_size;
+      best_rd = this_rd; 
+      sse_variance_output->returnrate = actual_rate;
+      sse_variance_output->returndistortion = actual_dist;
+      sse_variance_output->best_rd = this_rd;
+      sse_variance_output->best_mode = ZEROMV;
+      sse_variance_output->best_pred_filter = EIGHTTAP;
+      sse_variance_output->skip_txfm = skip_txfm;
+      sse_variance_output->tx_size = tx_size;
+      
     }
     if (this_rd < (int64_t)(1 << num_pels_log2_lookup[bsize]))
     {
@@ -1476,8 +1463,8 @@ void vp9_pick_inter_mode_part1(__global uchar *ref_frame,
     }
   }
 
-  int do_newmv = combined_motion_search(ref_frame,
-                  (cur_frame - global_offset),
+  mv_input->do_newmv = combined_motion_search(ref_frame,
+                  cur_frame,
                   mv_input,
                   rd_parameters,
                   stride,
@@ -1488,20 +1475,10 @@ void vp9_pick_inter_mode_part1(__global uchar *ref_frame,
                   &out_mv,
                   intermediate_ushort);
 
-  if (!do_newmv)
-    mv_input->do_newmv = 0;
-  
   sse_variance_output->rate_mv = out_mv.rate_mv;
  
 exit:
   sse_variance_output->mv = out_mv.mv;
-  sse_variance_output->returnrate = best_rate;
-  sse_variance_output->returndistortion = best_dist;
-  sse_variance_output->best_rd = best_rd;
-  sse_variance_output->best_mode = best_mode;
-  sse_variance_output->best_pred_filter = best_pred_filter;
-  sse_variance_output->skip_txfm = best_skip_txfm;
-  sse_variance_output->tx_size = best_tx_size;
   return;
 }
 
@@ -1517,7 +1494,84 @@ void vp9_pick_inter_mode_part2(__global uchar *ref_frame,
     __global GPU_OUTPUT *pred_mv
 ) {
 
-  __global uchar *ref_data;
+  __local ushort intermediate_ushort[(BLOCK_SIZE_IN_PIXELS + 1) * BLOCK_SIZE_IN_PIXELS];
+  __local uchar8 intermediate_uchar8[(BLOCK_SIZE_IN_PIXELS*(BLOCK_SIZE_IN_PIXELS + 7))/NUM_PIXELS_PER_WORKITEM];
+  __local int *intermediate_int = (__local int *)intermediate_uchar8;
+
+  int global_col = get_global_id(0);
+  int global_row = get_global_id(1);
+  int global_offset = (global_row * stride) + (global_col * NUM_PIXELS_PER_WORKITEM);
+
+  int group_col = get_group_id(0);
+  int group_row = get_group_id(1);
+  int group_stride = get_num_groups(0);
+
+  int local_col = get_local_id(0);
+  int local_row = get_local_id(1);
+  int local_stride = get_local_size(0);
+
+  global_offset += (VP9_ENC_BORDER_IN_PIXELS * stride) + VP9_ENC_BORDER_IN_PIXELS;
+  mv_input      += (group_row * group_stride + group_col);
+
+  sse_variance_output += (group_row * group_stride + group_col);
+
+  cur_frame += global_offset;
+  ref_frame += global_offset;
+
+
+  if(!mv_input->do_compute)
+    goto exit;
+
+  int mi_row = group_row * local_stride;
+  int mi_col = group_col * local_stride;
+  int mi_step = ((BLOCK_SIZE_IN_PIXELS / 8) / 2);
+  if (mi_col + mi_step >= mi_cols) {
+    goto exit;
+  }
+  if (mi_row + mi_step >= mi_rows) {
+    goto exit;
+  }
+
+  if (mv_input->do_newmv)
+  {
+    MV best_mv = sse_variance_output->mv;
+    MV nearest_mv = mv_input->nearest_mv;
+    MV fcenter_mv;
+    INIT x;
+    int error_per_bit = rd_parameters->error_per_bit;
+    __global int   *nmvcost_0        = rd_parameters->mvcost[0] + MV_MAX;
+    __global int   *nmvcost_1        = rd_parameters->mvcost[1] + MV_MAX;
+    __global int   *nmvjointcost     = rd_parameters->nmvjointcost;
+    
+    fcenter_mv.row = nearest_mv.row >> 3;
+    fcenter_mv.col = nearest_mv.col >> 3;
+    
+    vp9_gpu_set_mv_search_range(&x, mi_row, mi_col, mi_rows,
+                                mi_cols, (BLOCK_SIZE_IN_PIXELS >> 4));
+    
+    sse_variance_output->mv  = vp9_find_best_sub_pixel_tree(ref_frame, cur_frame,
+                                             nmvcost_0, nmvcost_1, nmvjointcost,
+                                             stride,
+                                             best_mv, nearest_mv, fcenter_mv,
+                                             &x, error_per_bit,
+                                             intermediate_ushort);
+  }
+exit:
+  return;
+}
+
+__kernel
+void vp9_pick_inter_mode_part3(__global uchar *ref_frame,
+    __global uchar *cur_frame,
+    int stride,
+    __global GPU_INPUT *mv_input,
+    __global GPU_OUTPUT *sse_variance_output,
+    __global GPU_RD_PARAMETERS *rd_parameters,
+    int mi_rows,
+    int mi_cols,
+    __global GPU_OUTPUT *pred_mv
+) {
+
   __local ushort intermediate_ushort[(BLOCK_SIZE_IN_PIXELS + 1) * BLOCK_SIZE_IN_PIXELS];
   __local uchar8 intermediate_uchar8[(BLOCK_SIZE_IN_PIXELS*(BLOCK_SIZE_IN_PIXELS + 7))/NUM_PIXELS_PER_WORKITEM];
   __local int *intermediate_int = (__local int *)intermediate_uchar8;
@@ -1536,11 +1590,11 @@ void vp9_pick_inter_mode_part2(__global uchar *ref_frame,
 
   int sum;
   uint sse, variance;
-  int rate, actual_rate, newmv_rate, best_rate = INT32_MAX;
-  int64_t dist, actual_dist, newmv_dist, best_dist = INT64_MAX;
+  int rate, actual_rate, newmv_rate = INT32_MAX;
+  int64_t dist, actual_dist, newmv_dist = INT64_MAX;
   int64_t this_rd, best_rd = INT64_MAX;
-  int newmv_skip_txfm = 0, best_skip_txfm = 0, skip_txfm;
-  TX_SIZE newmv_tx_size, best_tx_size, tx_size;
+  int newmv_skip_txfm = 0, skip_txfm;
+  TX_SIZE newmv_tx_size, tx_size;
   TX_MODE tx_mode = rd_parameters->tx_mode;
   int dc_quant = rd_parameters->dc_quant;
   int ac_quant = rd_parameters->ac_quant;
@@ -1555,8 +1609,6 @@ void vp9_pick_inter_mode_part2(__global uchar *ref_frame,
 #elif BLOCK_SIZE_IN_PIXELS == 8
   int bsize = BLOCK_8X8;
 #endif
-  best_tx_size = MIN(max_txsize_lookup[bsize],
-      tx_mode_to_biggest_tx_size[tx_mode]);
 
   sse_variance_output += (group_row * group_stride + group_col);
 #if BLOCK_SIZE_IN_PIXELS != 32
@@ -1568,8 +1620,6 @@ void vp9_pick_inter_mode_part2(__global uchar *ref_frame,
   uchar8 pred_data;
   PREDICTION_MODE best_mode = ZEROMV;
   INTERP_FILTER newmv_filter, best_pred_filter = EIGHTTAP;
-
-  ref_data = ref_frame + global_offset;
 
   GPU_OUTPUT_STAGE1 out_mv;
   
@@ -1601,7 +1651,7 @@ void vp9_pick_inter_mode_part2(__global uchar *ref_frame,
   int horz_subpel = (mv_col & SUBPEL_MASK) << 1;
   int vert_subpel = (mv_row & SUBPEL_MASK) << 1;
 
-  ref_data = ref_frame + global_offset + mv_offset;
+  ref_frame += global_offset + mv_offset;
 
   int64_t cost, best_cost = INT64_MAX;
   int filter_type, end_filter_type;
@@ -1611,7 +1661,7 @@ void vp9_pick_inter_mode_part2(__global uchar *ref_frame,
     end_filter_type = EIGHTTAP;
 
   for (filter_type = EIGHTTAP; filter_type <= end_filter_type; ++filter_type) {
-    pred_data = inter_prediction(ref_data, stride, horz_subpel, vert_subpel,
+    pred_data = inter_prediction(ref_frame, stride, horz_subpel, vert_subpel,
                             filter_type, intermediate_uchar8);
 
     CALCULATE_SSE_VAR(curr_data, pred_data)
