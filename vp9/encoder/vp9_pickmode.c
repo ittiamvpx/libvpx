@@ -465,6 +465,8 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
   struct buf_2d orig_dst = pd->dst;
   PRED_BUFFER *best_pred = NULL;
   PRED_BUFFER *this_mode_pred = NULL;
+  int is_gpu_block = (bsize == BLOCK_32X32 || bsize == BLOCK_16X16 ||
+      bsize == BLOCK_8X8);
 #if CONFIG_GPU_COMPUTE
   GPU_BLOCK_SIZE gpu_bsize = get_gpu_block_size(bsize);
   VP9_GPU *gpu = &cpi->gpu;
@@ -502,6 +504,9 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
                         EIGHTTAP : cm->interp_filter;
   mbmi->segment_id = segment_id;
 
+  // Only the block sizes computed on GPU should go thru data parallel processing
+  if (x->data_parallel_processing)
+    assert(is_gpu_block);
   // TODO(karthick-ittiam) : For GPU compute, segment_id of '0' is assumed.
   // Need to add support for multiple segments.
   if (cm->use_gpu && gpu_input)
@@ -559,7 +564,7 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
     // Mode info, thus making the algorithm/execution data serial. To off-load
     // some of the algorithms to the GPU, we need make it data-parallel.
     // We have currently data parallelized ZEROMV and NEWMV computations.
-    if (cm->use_gpu) {
+    if (cm->use_gpu && is_gpu_block) {
       if (x->data_parallel_processing) {
         start_mode = ZEROMV;
         end_mode = NEWMV;

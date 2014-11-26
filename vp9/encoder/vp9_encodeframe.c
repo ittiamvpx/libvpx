@@ -2859,9 +2859,21 @@ static void nonrd_pick_partition(VP9_COMP *cpi, MACROBLOCK *const x,
     // if its RD cost results from GPU suggests that 32x32 is better
     if (cm->use_gpu && bsize == BLOCK_32X32) {
       int64_t total_rd_16x16 = 0;
+      int is_gpu_block = 1;
       for (i = 0; i < 4; ++i) {
         const int x_idx = (i & 1) * ms;
         const int y_idx = (i >> 1) * ms;
+        const int ms_16x16 = num_8x8_blocks_wide_lookup[bsize] / 2;
+        const int force_horz_split_16x16 =
+            (mi_row + y_idx + ms_16x16 >= cm->mi_rows);
+        const int force_vert_split_16x16 =
+            (mi_col + x_idx + ms_16x16 >= cm->mi_cols);
+
+        if (force_horz_split_16x16 || force_vert_split_16x16)
+        {
+          is_gpu_block = 0;
+          continue;
+        }
 
         if (mi_row + y_idx >= cm->mi_rows || mi_col + x_idx >= cm->mi_cols)
           continue;
@@ -2870,7 +2882,7 @@ static void nonrd_pick_partition(VP9_COMP *cpi, MACROBLOCK *const x,
       }
       // If the 32x32 RD cost is 12.5% lesser than the total RD cost(from GPU)
       // of its sub 16x16 blocks, then avoid further computations for 16x16
-      if (best_rd < (total_rd_16x16 * 7) / 8)
+      if (best_rd < (total_rd_16x16 * 7) / 8 && is_gpu_block)
         sum_rd = INT64_MAX;
     }
 
@@ -3196,8 +3208,8 @@ static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
                                                TOKENEXTRA **tp)
 {
   SPEED_FEATURES *const sf = &cpi->sf;
-#if !CONFIG_GPU_COMPUTE
   VP9_COMMON *const cm = &cpi->common;
+#if !CONFIG_GPU_COMPUTE
   MACROBLOCKD *const xd = &x->e_mbd;
 #endif
   GPU_BLOCK_SIZE i;
@@ -3215,6 +3227,7 @@ static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
     int total_rate[GPU_BLOCK_SIZES];
     int64_t total_dist[GPU_BLOCK_SIZES];
     int64_t rdcost[GPU_BLOCK_SIZES];
+    int is_gpu_block = 1;
 
     // First iteration(i = 0) will run for 32x32 block
     // Second iteration(i = 1) will run for four 16x16 childs blocks
@@ -3252,20 +3265,29 @@ static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
           int row_idx = row_idx_j + (k >> 1);
           int rate;
           int64_t dist;
+          const int actual_mi_row = mi_row + row_idx;
+          const int actual_mi_col = mi_col + col_idx;
+          const int ms = num_8x8_blocks_wide_lookup[bsize] / 2;
+          const int force_horz_split = (actual_mi_row + ms >= cm->mi_rows);
+          const int force_vert_split = (actual_mi_col + ms >= cm->mi_cols);
 
-          if (mi_col + col_idx >= tile->mi_col_end ||
-              mi_row + row_idx >= tile->mi_row_end)
+          if (force_horz_split || force_vert_split) {
+            is_gpu_block = 0;
+            continue;
+          }
+          if (actual_mi_col >= tile->mi_col_end ||
+              actual_mi_row >= tile->mi_row_end)
             continue;
 
 #if !CONFIG_GPU_COMPUTE // Disabled temporarily for OpenCL development. Will be enabled back soon.
           // Let us try to avoid 8x8's MV computations if 32x32 is winning
           // already
-          if (bsize == BLOCK_8X8) {
+          if (bsize == BLOCK_8X8 && is_gpu_block) {
             // If the 32x32's RD cost is 12.5% lesser than 16x16's RD cost,
             // then skip computations for 8x8
             if (rdcost[GPU_BLOCK_32X32] < (rdcost[GPU_BLOCK_16X16] * 7) / 8) {
               vp9_gpu_set_mvinfo_offsets(cm, xd,
-                                         mi_row + row_idx, mi_col + col_idx,
+                                         actual_mi_row, actual_mi_col,
                                          BLOCK_8X8);
               xd->gpu_mvinfo[BLOCK_8X8]->best_rd = INT64_MAX;
               xd->gpu_mvinfo[BLOCK_8X8]->returnrate = INT32_MAX;
@@ -3275,10 +3297,11 @@ static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
           }
 #else
           (void)rdcost[i];
+          (void)is_gpu_block;
 #endif
           load_pred_mv(x, &pc_parent->none);
-          nonrd_pick_partition(cpi, x, tile, tp, mi_row + row_idx,
-                               mi_col + col_idx, bsize, &rate, &dist, 0,
+          nonrd_pick_partition(cpi, x, tile, tp, actual_mi_row,
+                               actual_mi_col, bsize, &rate, &dist, 0,
                                INT64_MAX, pc_tree);
           total_rate[i] += rate;
           total_dist[i] += dist;
