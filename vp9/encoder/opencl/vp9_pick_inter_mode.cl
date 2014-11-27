@@ -8,7 +8,6 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-
 typedef enum BLOCK_SIZE {
   BLOCK_4X4,
   BLOCK_4X8,
@@ -201,22 +200,22 @@ typedef enum {
   }                                                 \
   if (block_size_in_pixels >= 32) {                 \
     barrier(CLK_LOCAL_MEM_FENCE);                   \
-    if (local_row < 16)                             \
+    if (local_row < 16 && local_col == 0)           \
     inter[(local_row * local_stride)] += inter[(local_row + 16) * local_stride]; \
   }                                                 \
   if (block_size_in_pixels >= 16) {                 \
     barrier(CLK_LOCAL_MEM_FENCE);                   \
-    if (local_row < 8)                              \
+    if (local_row < 8 && local_col == 0)            \
     inter[(local_row * local_stride)] += inter[(local_row + 8) * local_stride];  \
   }                                                 \
   barrier(CLK_LOCAL_MEM_FENCE);                     \
-  if (local_row < 4)                                \
+  if (local_row < 4 && local_col == 0)              \
   inter[(local_row * local_stride)] += inter[(local_row + 4) * local_stride]; \
   barrier(CLK_LOCAL_MEM_FENCE);                     \
-  if (local_row < 2)                                \
+  if (local_row < 2 && local_col == 0)              \
   inter[(local_row * local_stride)] += inter[(local_row + 2) * local_stride]; \
   barrier(CLK_LOCAL_MEM_FENCE);                     \
-  if (local_row < 1)                                \
+  if (local_row < 1 && local_col == 0)              \
   inter[(local_row * local_stride)] += inter[(local_row + 1) * local_stride];
 
 #define CHECK_BETTER                                         \
@@ -241,7 +240,7 @@ typedef enum {
 
 ///* estimated cost of a motion vector (r,c) */
 #define MVC(v, r, c)                                         \
-     (((nmvjointcost[((r) != rr) * 2 + ((c) != rc)] +      \
+     (((nmvjointcost[((r) != rr) * 2 + ((c) != rc)] +        \
              nmvcost_0[((r) - rr)] + nmvcost_1[((c) - rc)]) *\
              error_per_bit + 4096) >> 13)
 
@@ -1207,6 +1206,16 @@ MV vp9_find_best_sub_pixel_tree(__global uchar *ref_frame,
   tr = br;
   tc = bc;
 
+  int mi_row = global_row / NUM_PIXELS_PER_WORKITEM;
+  int mi_col = global_col;
+#if BLOCK_SIZE_IN_PIXELS == 32
+  mi_row = (mi_row >> 2) << 2;
+  mi_col = (mi_col >> 2) << 2;
+#elif BLOCK_SIZE_IN_PIXELS == 16
+  mi_row = (mi_row >> 1) << 1;
+  mi_col = (mi_col >> 1) << 1;
+#endif
+
   hstep >>= 1;
   FIRST_LEVEL_CHECKS
 
@@ -1227,10 +1236,9 @@ int combined_motion_search(__global uchar *ref_frame,
                     int mi_cols,
                     int64_t best_rd_sofar,
                     GPU_OUTPUT_STAGE1 *out_stage1,
-                    __local ushort *intermediate_ushort
+                    __local int *intermediate_int
                     ) {
-  __local int    *intermediate_int = (__local int*)  intermediate_ushort;
-  __local uint   *intermediate_sse = (__local uint*) intermediate_ushort;
+  __local uint   *intermediate_sse = (__local uint*) intermediate_int;
   __global int   *nmvsadcost_0     = rd_parameters->nmvsadcost[0] + MV_MAX;
   __global int   *nmvsadcost_1     = rd_parameters->nmvsadcost[1] + MV_MAX;
   __global int   *nmvcost_0        = rd_parameters->mvcost[0] + MV_MAX;
@@ -1261,8 +1269,15 @@ int combined_motion_search(__global uchar *ref_frame,
   sad_per_bit   = rd_parameters->sad_per_bit;
   error_per_bit = rd_parameters->error_per_bit;
 
-  mi_row = group_row * local_stride;
-  mi_col = group_col * local_stride;
+  mi_row = global_row / NUM_PIXELS_PER_WORKITEM;
+  mi_col = global_col;
+#if BLOCK_SIZE_IN_PIXELS == 32
+  mi_row = (mi_row >> 2) << 2;
+  mi_col = (mi_col >> 2) << 2;
+#elif BLOCK_SIZE_IN_PIXELS == 16
+  mi_row = (mi_row >> 1) << 1;
+  mi_col = (mi_col >> 1) << 1;
+#endif
 
   vp9_gpu_set_mv_search_range(&x, mi_row, mi_col, mi_rows,
                               mi_cols, (BLOCK_SIZE_IN_PIXELS >> 4));
@@ -1295,7 +1310,7 @@ int combined_motion_search(__global uchar *ref_frame,
 
   if(do_newmv)
     out_stage1->mv = best_mv;
-  
+
   return do_newmv;
 }
 
@@ -1344,6 +1359,9 @@ void vp9_model_rd_from_var_lapndz(unsigned int var, unsigned int n,
 }
 
 __kernel
+__attribute__((reqd_work_group_size(BLOCK_SIZE_IN_PIXELS / NUM_PIXELS_PER_WORKITEM,
+                                    BLOCK_SIZE_IN_PIXELS,
+                                    1)))
 void vp9_pick_inter_mode_part1(__global uchar *ref_frame,
     __global uchar *cur_frame,
     int stride,
@@ -1355,7 +1373,6 @@ void vp9_pick_inter_mode_part1(__global uchar *ref_frame,
     __global GPU_OUTPUT *pred_mv
 ) {
 
-  __local ushort intermediate_ushort[(BLOCK_SIZE_IN_PIXELS + 1) * BLOCK_SIZE_IN_PIXELS];
   __local uchar8 intermediate_uchar8[(BLOCK_SIZE_IN_PIXELS*(BLOCK_SIZE_IN_PIXELS + 7))/NUM_PIXELS_PER_WORKITEM];
   __local int *intermediate_int = (__local int *)intermediate_uchar8;
 
@@ -1370,7 +1387,7 @@ void vp9_pick_inter_mode_part1(__global uchar *ref_frame,
   int local_col = get_local_id(0);
   int local_row = get_local_id(1);
   int local_stride = get_local_size(0);
-
+  int mi_row, mi_col;
   int sum;
   uint sse, variance;
   int rate, actual_rate;
@@ -1418,8 +1435,16 @@ void vp9_pick_inter_mode_part1(__global uchar *ref_frame,
   if(!mv_input->do_compute)
     goto exit;
 
-  int mi_row = group_row * local_stride;
-  int mi_col = group_col * local_stride;
+  mi_row = global_row / NUM_PIXELS_PER_WORKITEM;
+  mi_col = global_col;
+#if BLOCK_SIZE_IN_PIXELS == 32
+  mi_row = (mi_row >> 2) << 2;
+  mi_col = (mi_col >> 2) << 2;
+#elif BLOCK_SIZE_IN_PIXELS == 16
+  mi_row = (mi_row >> 1) << 1;
+  mi_col = (mi_col >> 1) << 1;
+#endif
+
   int mi_step = ((BLOCK_SIZE_IN_PIXELS / 8) / 2);
   if (mi_col + mi_step >= mi_cols) {
     goto exit;
@@ -1438,7 +1463,7 @@ void vp9_pick_inter_mode_part1(__global uchar *ref_frame,
     this_rd = RDCOST(rd_parameters->rd_mult, rd_parameters->rd_div,
         actual_rate, actual_dist);
     if (this_rd < best_rd) {
-      best_rd = this_rd; 
+      best_rd = this_rd;
       sse_variance_output->returnrate = actual_rate;
       sse_variance_output->returndistortion = actual_dist;
       sse_variance_output->best_rd = this_rd;
@@ -1446,7 +1471,7 @@ void vp9_pick_inter_mode_part1(__global uchar *ref_frame,
       sse_variance_output->best_pred_filter = EIGHTTAP;
       sse_variance_output->skip_txfm = skip_txfm;
       sse_variance_output->tx_size = tx_size;
-      
+
     }
     if (this_rd < (int64_t)(1 << num_pels_log2_lookup[bsize]))
     {
@@ -1473,16 +1498,19 @@ void vp9_pick_inter_mode_part1(__global uchar *ref_frame,
                   mi_cols,
                   best_rd,
                   &out_mv,
-                  intermediate_ushort);
+                  intermediate_int);
 
   sse_variance_output->rate_mv = out_mv.rate_mv;
- 
+
 exit:
   sse_variance_output->mv = out_mv.mv;
   return;
 }
 
 __kernel
+__attribute__((reqd_work_group_size(BLOCK_SIZE_IN_PIXELS / NUM_PIXELS_PER_WORKITEM,
+                                    BLOCK_SIZE_IN_PIXELS,
+                                    1)))
 void vp9_pick_inter_mode_part2(__global uchar *ref_frame,
     __global uchar *cur_frame,
     int stride,
@@ -1495,8 +1523,6 @@ void vp9_pick_inter_mode_part2(__global uchar *ref_frame,
 ) {
 
   __local ushort intermediate_ushort[(BLOCK_SIZE_IN_PIXELS + 1) * BLOCK_SIZE_IN_PIXELS];
-  __local uchar8 intermediate_uchar8[(BLOCK_SIZE_IN_PIXELS*(BLOCK_SIZE_IN_PIXELS + 7))/NUM_PIXELS_PER_WORKITEM];
-  __local int *intermediate_int = (__local int *)intermediate_uchar8;
 
   int global_col = get_global_id(0);
   int global_row = get_global_id(1);
@@ -1510,6 +1536,8 @@ void vp9_pick_inter_mode_part2(__global uchar *ref_frame,
   int local_row = get_local_id(1);
   int local_stride = get_local_size(0);
 
+  int mi_row, mi_col;
+
   global_offset += (VP9_ENC_BORDER_IN_PIXELS * stride) + VP9_ENC_BORDER_IN_PIXELS;
   mv_input      += (group_row * group_stride + group_col);
 
@@ -1522,8 +1550,16 @@ void vp9_pick_inter_mode_part2(__global uchar *ref_frame,
   if(!mv_input->do_compute)
     goto exit;
 
-  int mi_row = group_row * local_stride;
-  int mi_col = group_col * local_stride;
+  mi_row = global_row / NUM_PIXELS_PER_WORKITEM;
+  mi_col = global_col;
+#if BLOCK_SIZE_IN_PIXELS == 32
+  mi_row = (mi_row >> 2) << 2;
+  mi_col = (mi_col >> 2) << 2;
+#elif BLOCK_SIZE_IN_PIXELS == 16
+  mi_row = (mi_row >> 1) << 1;
+  mi_col = (mi_col >> 1) << 1;
+#endif
+
   int mi_step = ((BLOCK_SIZE_IN_PIXELS / 8) / 2);
   if (mi_col + mi_step >= mi_cols) {
     goto exit;
@@ -1542,13 +1578,13 @@ void vp9_pick_inter_mode_part2(__global uchar *ref_frame,
     __global int   *nmvcost_0        = rd_parameters->mvcost[0] + MV_MAX;
     __global int   *nmvcost_1        = rd_parameters->mvcost[1] + MV_MAX;
     __global int   *nmvjointcost     = rd_parameters->nmvjointcost;
-    
+
     fcenter_mv.row = nearest_mv.row >> 3;
     fcenter_mv.col = nearest_mv.col >> 3;
-    
+
     vp9_gpu_set_mv_search_range(&x, mi_row, mi_col, mi_rows,
                                 mi_cols, (BLOCK_SIZE_IN_PIXELS >> 4));
-    
+
     sse_variance_output->mv  = vp9_find_best_sub_pixel_tree(ref_frame, cur_frame,
                                              nmvcost_0, nmvcost_1, nmvjointcost,
                                              stride,
@@ -1561,6 +1597,9 @@ exit:
 }
 
 __kernel
+__attribute__((reqd_work_group_size(BLOCK_SIZE_IN_PIXELS / NUM_PIXELS_PER_WORKITEM,
+                                    BLOCK_SIZE_IN_PIXELS,
+                                    1)))
 void vp9_pick_inter_mode_part3(__global uchar *ref_frame,
     __global uchar *cur_frame,
     int stride,
@@ -1572,8 +1611,7 @@ void vp9_pick_inter_mode_part3(__global uchar *ref_frame,
     __global GPU_OUTPUT *pred_mv
 ) {
 
-  __local ushort intermediate_ushort[(BLOCK_SIZE_IN_PIXELS + 1) * BLOCK_SIZE_IN_PIXELS];
-  __local uchar8 intermediate_uchar8[(BLOCK_SIZE_IN_PIXELS*(BLOCK_SIZE_IN_PIXELS + 7))/NUM_PIXELS_PER_WORKITEM];
+  __local uchar8 intermediate_uchar8[(BLOCK_SIZE_IN_PIXELS*(BLOCK_SIZE_IN_PIXELS + 7))/NUM_PIXELS_PER_WORKITEM + 128];
   __local int *intermediate_int = (__local int *)intermediate_uchar8;
 
   int global_col = get_global_id(0);
@@ -1588,6 +1626,7 @@ void vp9_pick_inter_mode_part3(__global uchar *ref_frame,
   int local_row = get_local_id(1);
   int local_stride = get_local_size(0);
 
+  int mi_row, mi_col;
   int sum;
   uint sse, variance;
   int rate, actual_rate, newmv_rate = INT32_MAX;
@@ -1622,15 +1661,23 @@ void vp9_pick_inter_mode_part3(__global uchar *ref_frame,
   INTERP_FILTER newmv_filter, best_pred_filter = EIGHTTAP;
 
   GPU_OUTPUT_STAGE1 out_mv;
-  
+
   if(!mv_input->do_compute)
     goto exit;
-  
+
   if(!mv_input->do_newmv)
     goto exit;
 
-  int mi_row = group_row * local_stride;
-  int mi_col = group_col * local_stride;
+  mi_row = global_row / NUM_PIXELS_PER_WORKITEM;
+  mi_col = global_col;
+#if BLOCK_SIZE_IN_PIXELS == 32
+  mi_row = (mi_row >> 2) << 2;
+  mi_col = (mi_col >> 2) << 2;
+#elif BLOCK_SIZE_IN_PIXELS == 16
+  mi_row = (mi_row >> 1) << 1;
+  mi_col = (mi_col >> 1) << 1;
+#endif
+
   int mi_step = ((BLOCK_SIZE_IN_PIXELS / 8) / 2);
   if (mi_col + mi_step >= mi_cols) {
     goto exit;
@@ -1641,7 +1688,7 @@ void vp9_pick_inter_mode_part3(__global uchar *ref_frame,
 
   // ZEROMV not required for BLOCK_32X32
   if (BLOCK_SIZE_IN_PIXELS != 32) {
-    best_rd = sse_variance_output->best_rd;  
+    best_rd = sse_variance_output->best_rd;
   }
   out_mv.mv = sse_variance_output->mv;
   int mv_row = out_mv.mv.row;
@@ -1691,7 +1738,7 @@ void vp9_pick_inter_mode_part3(__global uchar *ref_frame,
     sse_variance_output->skip_txfm = newmv_skip_txfm;
     sse_variance_output->tx_size = newmv_tx_size;
   }
-  
+
 exit:
   return;
 }
@@ -1847,6 +1894,7 @@ uchar8 inter_prediction(__global uchar *ref_data,
     inter_out1 = convert_int4(inter.s4567);
     temp_out.s4567 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
 
+    barrier(CLK_LOCAL_MEM_FENCE);
     intermediate[inter_offset] = temp_out;
 
     if (local_row < 7) {

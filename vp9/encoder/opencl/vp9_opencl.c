@@ -62,10 +62,11 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
   VP9_COMMON *const cm = &cpi->common;
   VP9_OPENCL *opencl = (VP9_OPENCL *)cpi->gpu.compute_framework;
   cl_int status;
-  cl_int stride = cm->frame_bufs[0].buf.y_stride;
   GPU_BLOCK_SIZE gpu_bsize;
-  cl_int mi_rows = cm->mi_rows;
-  cl_int mi_cols = cm->mi_cols;
+
+  opencl->mi_rows = cm->mi_rows;
+  opencl->mi_cols = cm->mi_cols;
+  opencl->stride  = cm->frame_bufs[0].buf.y_stride;
 
   opencl->current_frame_size = cpi->lookahead->buf->img.buffer_alloc_sz;
   opencl->current_frame = clCreateBuffer(opencl->context,
@@ -124,7 +125,7 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
     status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part1[gpu_bsize], 1,
                              sizeof(cl_mem), &opencl->current_frame);
     status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part1[gpu_bsize], 2,
-                             sizeof(cl_int), &stride);
+                             sizeof(cl_int), &opencl->stride);
     status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part1[gpu_bsize], 3,
                              sizeof(cl_mem), &opencl->input_mv[gpu_bsize]);
     status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part1[gpu_bsize], 4,
@@ -132,9 +133,9 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
     status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part1[gpu_bsize], 5,
                              sizeof(cl_mem), &opencl->rd_parameters);
     status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part1[gpu_bsize], 6,
-                             sizeof(cl_int), &mi_rows);
+                             sizeof(cl_int), &opencl->mi_rows);
     status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part1[gpu_bsize], 7,
-                             sizeof(cl_int), &mi_cols);
+                             sizeof(cl_int), &opencl->mi_cols);
     // For 32x32 block this parameter is ignored. Used only for other block
     // sizes
     status |= clSetKernelArg(
@@ -150,7 +151,7 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
     status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part2[gpu_bsize], 1,
                              sizeof(cl_mem), &opencl->current_frame);
     status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part2[gpu_bsize], 2,
-                             sizeof(cl_int), &stride);
+                             sizeof(cl_int), &opencl->stride);
     status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part2[gpu_bsize], 3,
                              sizeof(cl_mem), &opencl->input_mv[gpu_bsize]);
     status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part2[gpu_bsize], 4,
@@ -158,9 +159,9 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
     status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part2[gpu_bsize], 5,
                              sizeof(cl_mem), &opencl->rd_parameters);
     status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part2[gpu_bsize], 6,
-                             sizeof(cl_int), &mi_rows);
+                             sizeof(cl_int), &opencl->mi_rows);
     status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part2[gpu_bsize], 7,
-                             sizeof(cl_int), &mi_cols);
+                             sizeof(cl_int), &opencl->mi_cols);
     // For 32x32 block this parameter is ignored. Used only for other block
     // sizes
     status |= clSetKernelArg(
@@ -176,7 +177,7 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
     status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part3[gpu_bsize], 1,
                              sizeof(cl_mem), &opencl->current_frame);
     status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part3[gpu_bsize], 2,
-                             sizeof(cl_int), &stride);
+                             sizeof(cl_int), &opencl->stride);
     status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part3[gpu_bsize], 3,
                              sizeof(cl_mem), &opencl->input_mv[gpu_bsize]);
     status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part3[gpu_bsize], 4,
@@ -184,9 +185,9 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
     status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part3[gpu_bsize], 5,
                              sizeof(cl_mem), &opencl->rd_parameters);
     status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part3[gpu_bsize], 6,
-                             sizeof(cl_int), &mi_rows);
+                             sizeof(cl_int), &opencl->mi_rows);
     status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part3[gpu_bsize], 7,
-                             sizeof(cl_int), &mi_cols);
+                             sizeof(cl_int), &opencl->mi_cols);
     // For 32x32 block this parameter is ignored. Used only for other block
     // sizes
     status |= clSetKernelArg(
