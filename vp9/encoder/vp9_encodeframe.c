@@ -3272,6 +3272,7 @@ static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
           const int force_vert_split = (actual_mi_col + ms >= cm->mi_cols);
 
           if (force_horz_split || force_vert_split) {
+            vp9_zero(pc_tree->none.pred_mv);
             is_gpu_block = 0;
             continue;
           }
