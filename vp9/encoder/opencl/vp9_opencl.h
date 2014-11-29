@@ -40,6 +40,7 @@ typedef struct VP9_OPENCL {
   cl_kernel        vp9_pick_inter_mode_part1[GPU_BLOCK_SIZES];
   cl_kernel        vp9_pick_inter_mode_part2[GPU_BLOCK_SIZES];
   cl_kernel        vp9_pick_inter_mode_part3[GPU_BLOCK_SIZES];
+  cl_kernel        vp9_pick_inter_mode_part4[GPU_BLOCK_SIZES];
   cl_int           mi_rows;
   cl_int           mi_cols;
   cl_int           stride;

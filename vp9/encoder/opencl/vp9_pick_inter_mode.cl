@@ -175,6 +175,8 @@ typedef enum {
 #define SWITCHABLE_FILTERS 3   // number of switchable filters
 #define MAX_MODES 30
 #define MV_COST_WEIGHT      108
+#define LOCAL_STRIDE (BLOCK_SIZE_IN_PIXELS / NUM_PIXELS_PER_WORKITEM)
+#define LOCAL_HEIGHT  BLOCK_SIZE_IN_PIXELS
 
 /* The maximum number of steps in a step search given the largest allowed
  * initial step
@@ -191,32 +193,32 @@ typedef enum {
   if (block_size_in_pixels >= 32) {                 \
     barrier(CLK_LOCAL_MEM_FENCE);                   \
     if (local_col < 2)                              \
-    inter[(local_row * local_stride) + local_col] += inter[(local_row * local_stride) + local_col + 2]; \
+      inter[(local_row * LOCAL_STRIDE) + local_col] += inter[(local_row * LOCAL_STRIDE) + local_col + 2]; \
   }                                                 \
   if (block_size_in_pixels >= 16) {                 \
     barrier(CLK_LOCAL_MEM_FENCE);                   \
     if (local_col < 1)                              \
-    inter[(local_row * local_stride)] += inter[(local_row * local_stride) + 1];  \
+      inter[(local_row * LOCAL_STRIDE)] += inter[(local_row * LOCAL_STRIDE) + 1];  \
   }                                                 \
   if (block_size_in_pixels >= 32) {                 \
     barrier(CLK_LOCAL_MEM_FENCE);                   \
     if (local_row < 16 && local_col == 0)           \
-    inter[(local_row * local_stride)] += inter[(local_row + 16) * local_stride]; \
+      inter[(local_row * LOCAL_STRIDE)] += inter[(local_row + 16) * LOCAL_STRIDE]; \
   }                                                 \
   if (block_size_in_pixels >= 16) {                 \
     barrier(CLK_LOCAL_MEM_FENCE);                   \
     if (local_row < 8 && local_col == 0)            \
-    inter[(local_row * local_stride)] += inter[(local_row + 8) * local_stride];  \
+      inter[(local_row * LOCAL_STRIDE)] += inter[(local_row + 8) * LOCAL_STRIDE];  \
   }                                                 \
   barrier(CLK_LOCAL_MEM_FENCE);                     \
   if (local_row < 4 && local_col == 0)              \
-  inter[(local_row * local_stride)] += inter[(local_row + 4) * local_stride]; \
+    inter[(local_row * LOCAL_STRIDE)] += inter[(local_row + 4) * LOCAL_STRIDE]; \
   barrier(CLK_LOCAL_MEM_FENCE);                     \
   if (local_row < 2 && local_col == 0)              \
-  inter[(local_row * local_stride)] += inter[(local_row + 2) * local_stride]; \
+    inter[(local_row * LOCAL_STRIDE)] += inter[(local_row + 2) * LOCAL_STRIDE]; \
   barrier(CLK_LOCAL_MEM_FENCE);                     \
   if (local_row < 1 && local_col == 0)              \
-  inter[(local_row * local_stride)] += inter[(local_row + 1) * local_stride];
+    inter[(local_row * LOCAL_STRIDE)] += inter[(local_row + 1) * LOCAL_STRIDE];
 
 #define CHECK_BETTER                                         \
   {                                                          \
@@ -251,14 +253,14 @@ typedef enum {
        sp(c), sp(r), r, c, &sse, &sum, fdata3);                  \
                                                                  \
   barrier(CLK_LOCAL_MEM_FENCE);                                  \
-  intermediate_sum[local_row * local_stride + local_col] = sum;  \
+  intermediate_sum[local_row * LOCAL_STRIDE + local_col] = sum;  \
                                                                  \
   ACCUMULATE(BLOCK_SIZE_IN_PIXELS,intermediate_sum);             \
   barrier(CLK_LOCAL_MEM_FENCE);                                  \
   sum = intermediate_sum[0];                                     \
                                                                  \
   barrier(CLK_LOCAL_MEM_FENCE);                                  \
-  intermediate_sse[local_row * local_stride + local_col] = sse;  \
+  intermediate_sse[local_row * LOCAL_STRIDE + local_col] = sse;  \
                                                                  \
   ACCUMULATE(BLOCK_SIZE_IN_PIXELS,intermediate_sse);             \
   barrier(CLK_LOCAL_MEM_FENCE);                                  \
@@ -300,13 +302,13 @@ typedef enum {
                       &sse, &sum, &best_mv);                           \
                                                                        \
     barrier(CLK_LOCAL_MEM_FENCE);                                      \
-    intermediate_sum[local_row * local_stride + local_col] = sum;      \
+    intermediate_sum[local_row * LOCAL_STRIDE + local_col] = sum;      \
     ACCUMULATE(BLOCK_SIZE_IN_PIXELS,intermediate_sum);                 \
     barrier(CLK_LOCAL_MEM_FENCE);                                      \
     sum = intermediate_sum[0];                                         \
                                                                        \
     barrier(CLK_LOCAL_MEM_FENCE);                                      \
-    intermediate_sse[local_row * local_stride + local_col] = sse;      \
+    intermediate_sse[local_row * LOCAL_STRIDE + local_col] = sse;      \
     ACCUMULATE(BLOCK_SIZE_IN_PIXELS,intermediate_sse);                 \
     barrier(CLK_LOCAL_MEM_FENCE);                                      \
     sse = intermediate_sse[0];                                         \
@@ -352,19 +354,20 @@ typedef enum {
 #define SQUARE(a) ((a) * (a))
 
 #define CALCULATE_SSE_VAR(a, b)                                     \
-    sum = a.s0 - b.s0 + a.s1 - b.s1 + a.s2 - b.s2 + a.s3 - b.s3 +   \
-          a.s4 - b.s4 + a.s5 - b.s5 + a.s6 - b.s6 + a.s7 - b.s7;    \
+    c = convert_short8(a) - convert_short8(b);                      \
+    sum = c.s0 + c.s1 + c.s2 + c.s3 +                               \
+          c.s4 + c.s5 + c.s6 + c.s7;                                \
     barrier(CLK_LOCAL_MEM_FENCE);                                   \
-    intermediate_int[(local_row * local_stride) + local_col] = sum; \
+    intermediate_int[(local_row * LOCAL_STRIDE) + local_col] = sum; \
     ACCUMULATE(BLOCK_SIZE_IN_PIXELS, intermediate_int)              \
     barrier(CLK_LOCAL_MEM_FENCE);                                   \
     sum = intermediate_int[0];                                      \
-    sse = SQUARE(a.s0 - b.s0) + SQUARE(a.s1 - b.s1) +               \
-          SQUARE(a.s2 - b.s2) + SQUARE(a.s3 - b.s3) +               \
-          SQUARE(a.s4 - b.s4) + SQUARE(a.s5 - b.s5) +               \
-          SQUARE(a.s6 - b.s6) + SQUARE(a.s7 - b.s7);                \
+    c_squared = convert_int8(c) * convert_int8(c);                  \
+    c_squared.s0123 = c_squared.s0123 + c_squared.s4567;            \
+    c_squared.s01   = c_squared.s01   + c_squared.s23;              \
+    sse = c_squared.s0 + c_squared.s1;                              \
     barrier(CLK_LOCAL_MEM_FENCE);                                   \
-    intermediate_int[(local_row * local_stride) + local_col] = sse; \
+    intermediate_int[(local_row * LOCAL_STRIDE) + local_col] = sse; \
     ACCUMULATE(BLOCK_SIZE_IN_PIXELS, intermediate_int)              \
     barrier(CLK_LOCAL_MEM_FENCE);                                   \
     sse = intermediate_int[0];                                      \
@@ -438,6 +441,8 @@ typedef struct GPU_INPUT {
 typedef struct GPU_OUTPUT {
   MV mv;
   int rate_mv;
+  int          sum[EIGHTTAP_SHARP + 1];
+  uint         sse[EIGHTTAP_SHARP + 1];
   int          returnrate;
   int64_t      returndistortion;
   int64_t      best_rd;
@@ -655,18 +660,6 @@ __constant int xsq_iq_q10[] = {
    65504,  73696,  81888,  90080,  98272, 106464, 114656, 122848,
   131040, 147424, 163808, 180192, 196576, 212960, 229344, 245728,
 };
-
-
-
-
-uchar8 inter_prediction(__global uchar *ref_data,
-    int stride,
-    int horz_subpel,
-    int vert_subpel,
-    int filter_type,
-    __local uchar8 *intermediate);
-
-
 
 // convert motion vector component to offset for svf calc
 inline unsigned int sp(unsigned int x) {
@@ -896,7 +889,6 @@ void var_filter_block2d_bil_first_pass_gpu(__global uchar *ref_data,
    __local ushort8 *output;
   int local_col  = get_local_id(0);
   int local_row  = get_local_id(1);
-  int local_height = get_local_size(1);
   uchar8 src_0;
   uchar8 src_1;
 
@@ -909,7 +901,7 @@ void var_filter_block2d_bil_first_pass_gpu(__global uchar *ref_data,
       convert_ushort8(ROUND_POWER_OF_TWO(convert_int8(src_0) * vp9_filter.s3 +
                          convert_int8(src_1) * vp9_filter.s4,  FILTER_BITS));
 
-  if (local_row == (local_height - 1)) {
+  if (local_row == (LOCAL_HEIGHT - 1)) {
 
     output   = (__local ushort8 *)(fdata3 + (local_row + 1) *
                 BLOCK_SIZE_IN_PIXELS + local_col * NUM_PIXELS_PER_WORKITEM);
@@ -928,7 +920,6 @@ uchar8 var_filter_block2d_bil_second_pass_gpu(__local uint16_t *fdata3,
   int local_col  = get_local_id(0);
   int local_row  = get_local_id(1);
 
-  int local_stride = get_local_size(0);
   uchar8 output;
   __local ushort8 *ref_data;
   ushort8 src_0;
@@ -970,8 +961,6 @@ void calculate_subpel_variance(__global uchar *ref_frame,
   int global_col = get_global_id(0);
   int global_row = get_global_id(1);
 
-  int local_stride = get_local_size(0);
-
   buffer_offset = ((row >> 3) * stride) + (col >> 3);
   *sum = 0;
   *sse = 0;
@@ -996,10 +985,8 @@ inline int get_sad(__global uchar *ref_frame, __global uchar *cur_frame,
   int local_col  = get_local_id(0);
   int local_row  = get_local_id(1);
 
-  int local_stride = get_local_size(0);
-
   barrier(CLK_LOCAL_MEM_FENCE);
-  intermediate_sad[local_row * local_stride + local_col] =
+  intermediate_sad[local_row * LOCAL_STRIDE + local_col] =
       calculate_sad(&this_mv, ref_frame, cur_frame, stride);
 
   ACCUMULATE(BLOCK_SIZE_IN_PIXELS,intermediate_sad)
@@ -1054,8 +1041,6 @@ MV full_pixel_search(__global uchar *ref_frame,
   int local_col  = get_local_id(0);
   int local_row  = get_local_id(1);
 
-  int local_stride = get_local_size(0);
-
   clamp_gpu_mv(&best_mv, x->mv_col_min, x->mv_col_max,
                             x->mv_row_min , x->mv_row_max);
 
@@ -1074,7 +1059,7 @@ MV full_pixel_search(__global uchar *ref_frame,
         this_mv.col = bc + hex_candidates[pattern][i].col;
 
         barrier(CLK_LOCAL_MEM_FENCE);
-        intermediate_sad[local_row * local_stride + local_col] =
+        intermediate_sad[local_row * LOCAL_STRIDE + local_col] =
                          calculate_sad(&this_mv,ref_frame,cur_frame,stride);
 
         ACCUMULATE(BLOCK_SIZE_IN_PIXELS,intermediate_sad);
@@ -1094,7 +1079,7 @@ MV full_pixel_search(__global uchar *ref_frame,
         }
 
         barrier(CLK_LOCAL_MEM_FENCE);
-        intermediate_sad[local_row * local_stride + local_col] =
+        intermediate_sad[local_row * LOCAL_STRIDE + local_col] =
                          calculate_sad(&this_mv,ref_frame,cur_frame,stride);
 
         ACCUMULATE(BLOCK_SIZE_IN_PIXELS,intermediate_sad);
@@ -1128,7 +1113,7 @@ MV full_pixel_search(__global uchar *ref_frame,
           this_mv.col = bc + hex_candidates[pattern][next_chkpts_indices[i]].col;
 
           barrier(CLK_LOCAL_MEM_FENCE);
-          intermediate_sad[local_row * local_stride + local_col] =
+          intermediate_sad[local_row * LOCAL_STRIDE + local_col] =
                             calculate_sad(&this_mv,ref_frame,cur_frame,stride);
 
           ACCUMULATE(BLOCK_SIZE_IN_PIXELS,intermediate_sad)
@@ -1146,7 +1131,7 @@ MV full_pixel_search(__global uchar *ref_frame,
           }
 
           barrier(CLK_LOCAL_MEM_FENCE);
-          intermediate_sad[local_row * local_stride + local_col] =
+          intermediate_sad[local_row * LOCAL_STRIDE + local_col] =
                           calculate_sad(&this_mv,ref_frame,cur_frame,stride);
 
           ACCUMULATE(BLOCK_SIZE_IN_PIXELS,intermediate_sad)
@@ -1196,9 +1181,6 @@ MV vp9_find_best_sub_pixel_tree(__global uchar *ref_frame,
 
   int global_col = get_global_id(0);
   int global_row = get_global_id(1);
-
-  int local_stride = get_local_size(0);
-  int local_height = get_local_size(1);
 
   SETUP_SUBPEL_CHECKS
 
@@ -1262,9 +1244,6 @@ int combined_motion_search(__global uchar *ref_frame,
 
   int group_stride = get_num_groups(0);
   int group_height = get_num_groups(1);
-
-  int local_stride = get_local_size(0);
-  int local_height = get_local_size(1);
 
   sad_per_bit   = rd_parameters->sad_per_bit;
   error_per_bit = rd_parameters->error_per_bit;
@@ -1358,6 +1337,249 @@ void vp9_model_rd_from_var_lapndz(unsigned int var, unsigned int n,
   }
 }
 
+inline void inter_prediction(__global uchar *ref_data,
+                               __global uchar *cur_frame,
+    int stride,
+    int horz_subpel,
+    int vert_subpel,
+    int filter_type,
+    __local uchar8 *intermediate,
+    __global int *psum,
+    __global uint *psse
+) {
+  __global uchar8 *out_data_vec8;
+  __local uchar8 *intermediate_uchar8;
+  __local int *intermediate_int = (__local int *)intermediate;
+  uchar8 curr_data = vload8(0, cur_frame);
+
+  uchar16 ref;
+  uchar8 ref_u8;
+
+  short8 inter, inter1;
+  int4 inter_out1;
+  int sum;
+  uint sse, variance;
+  int8 c_squared;
+  short8 c;
+
+  int local_col = get_local_id(0);
+  int local_row = get_local_id(1);
+  int inter_offset = (local_row * LOCAL_STRIDE) + local_col;
+
+  short8 tmp;
+  int4 shift_val=(int4)(1<<14);
+  int4 tmp1;
+  uchar8 temp_out;
+  uchar8 out_uni;
+  uchar8 out_bi;
+  int i;
+
+  if (!vert_subpel) {
+    /* L0 only x_frac */
+    char8 filt = filter[filter_type][horz_subpel];
+
+    ref = vload16(0, ref_data - 3);
+
+    inter = (short8)(-1 << 14);
+
+    tmp = filt.s0;
+    inter += convert_short8(ref.s01234567) * tmp;
+    tmp = filt.s1;
+    inter += convert_short8(ref.s12345678) * tmp;
+    tmp = filt.s2;
+    inter += convert_short8(ref.s23456789) * tmp;
+    tmp = filt.s3;
+    inter += convert_short8(ref.s3456789a) * tmp;
+    tmp = filt.s4;
+    inter += convert_short8(ref.s456789ab) * tmp;
+    tmp = filt.s5;
+    inter += convert_short8(ref.s56789abc) * tmp;
+    tmp = filt.s6;
+    inter += convert_short8(ref.s6789abcd) * tmp;
+    tmp = filt.s7;
+    inter += convert_short8(ref.s789abcde) * tmp;
+
+    if (horz_subpel == 0) {
+      tmp1 = (1 << 5) + shift_val;
+      inter_out1 = convert_int4(inter.s0123);
+
+      out_uni.s0123 = convert_uchar4_sat((inter_out1 + tmp1) >> 6);
+      inter_out1 = convert_int4(inter.s4567);
+
+      out_uni.s4567 = convert_uchar4_sat((inter_out1 + tmp1) >> 6);
+    } else {
+      tmp1 = (1<<6)+shift_val;
+      inter_out1 = convert_int4(inter.s0123);
+
+      out_uni.s0123 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
+      inter_out1 =convert_int4(inter.s4567);
+
+      out_uni.s4567 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
+    }
+    curr_data = vload8(0, cur_frame);
+    CALCULATE_SSE_VAR(curr_data, out_uni)
+    *psum = sum;
+    *psse = sse;    
+  } else if(!horz_subpel) {
+    /* L0 only y_frac */
+    char8 filt = filter[filter_type][vert_subpel];
+    inter = (short8)(-1 << 14);
+    ref_data -= (3*stride);
+    ref_u8 = vload8(0, ref_data);
+    tmp = filt.s0;
+    inter += convert_short8(ref_u8) * tmp;
+
+    ref_data += stride;
+    ref_u8 = vload8(0, ref_data);
+    tmp = filt.s1;
+    inter += convert_short8(ref_u8) * tmp;
+
+    ref_data += stride;
+    ref_u8 = vload8(0, ref_data);
+    tmp = filt.s2;
+    inter += convert_short8(ref_u8) * tmp;
+
+    ref_data += stride;
+    ref_u8 = vload8(0, ref_data);
+    tmp = filt.s3;
+    inter += convert_short8(ref_u8) * tmp;
+
+    ref_data += stride;
+    ref_u8 = vload8(0, ref_data);
+    tmp = filt.s4;
+    inter += convert_short8(ref_u8) * tmp;
+
+    ref_data += stride;
+    ref_u8 = vload8(0, ref_data);
+    tmp = filt.s5;
+    inter += convert_short8(ref_u8) * tmp;
+
+    ref_data += stride;
+    ref_u8 = vload8(0, ref_data);
+    tmp = filt.s6;
+    inter += convert_short8(ref_u8) * tmp;
+
+    ref_data += stride;
+    ref_u8 = vload8(0, ref_data);
+    tmp = filt.s7;
+    inter += convert_short8(ref_u8) * tmp;
+
+    tmp1 = (1 << 6) + shift_val;
+    inter_out1 = convert_int4(inter.s0123);
+
+    out_uni.s0123 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
+    inter_out1 = convert_int4(inter.s4567);
+
+    out_uni.s4567 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
+    curr_data = vload8(0, cur_frame);
+    CALCULATE_SSE_VAR(curr_data, out_uni)
+    *psum = sum;
+    *psse = sse;    
+  } else {
+    char8 filt = filter[filter_type][horz_subpel];
+    ref_data -= (3 * stride);
+    inter = (short8)(-1 << 14);
+    ref = vload16(0, ref_data - 3);
+
+    tmp = filt.s0;
+    inter += convert_short8(ref.s01234567) * tmp;
+    tmp = filt.s1;
+    inter += convert_short8(ref.s12345678) * tmp;
+    tmp = filt.s2;
+    inter += convert_short8(ref.s23456789) * tmp;
+    tmp = filt.s3;
+    inter += convert_short8(ref.s3456789a) * tmp;
+    tmp = filt.s4;
+    inter += convert_short8(ref.s456789ab) * tmp;
+    tmp = filt.s5;
+    inter += convert_short8(ref.s56789abc) * tmp;
+    tmp = filt.s6;
+    inter += convert_short8(ref.s6789abcd) * tmp;
+    tmp = filt.s7;
+    inter += convert_short8(ref.s789abcde) * tmp;
+
+    tmp1 = (1 << 6) + shift_val;
+    inter_out1 = convert_int4(inter.s0123);
+    temp_out.s0123 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
+    inter_out1 = convert_int4(inter.s4567);
+    temp_out.s4567 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
+
+    barrier(CLK_LOCAL_MEM_FENCE);
+    intermediate[inter_offset] = temp_out;
+
+    if (local_row < 7) {
+      ref_data += (BLOCK_SIZE_IN_PIXELS * stride);
+
+      ref = vload16(0, ref_data - 3);
+      inter = (short8)(-1 << 14);
+      tmp = filt.s0;
+      inter += convert_short8(ref.s01234567) * tmp;
+      tmp = filt.s1;
+      inter += convert_short8(ref.s12345678) * tmp;
+      tmp = filt.s2;
+      inter += convert_short8(ref.s23456789) * tmp;
+      tmp = filt.s3;
+      inter += convert_short8(ref.s3456789a) * tmp;
+      tmp = filt.s4;
+      inter += convert_short8(ref.s456789ab) * tmp;
+      tmp = filt.s5;
+      inter += convert_short8(ref.s56789abc) * tmp;
+      tmp = filt.s6;
+      inter += convert_short8(ref.s6789abcd) * tmp;
+      tmp = filt.s7;
+      inter += convert_short8(ref.s789abcde) * tmp;
+      tmp1 = (1 << 6) + shift_val;
+      inter_out1 = convert_int4(inter.s0123);
+      temp_out.s0123 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
+      inter_out1 = convert_int4(inter.s4567);
+      temp_out.s4567 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
+      intermediate[inter_offset + LOCAL_STRIDE * LOCAL_HEIGHT] = temp_out;
+    }
+
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    intermediate_uchar8 = intermediate + inter_offset + (3 * LOCAL_STRIDE);
+    filt = filter[filter_type][vert_subpel];
+    inter = (short8)(-1 << 14);
+    ref_u8 = intermediate_uchar8[-3 * LOCAL_STRIDE];
+    tmp = filt.s0;
+    inter += convert_short8(ref_u8) * tmp;
+    ref_u8 = intermediate_uchar8[-2 * LOCAL_STRIDE];
+    tmp = filt.s1;
+    inter += convert_short8(ref_u8) * tmp;
+    ref_u8 = intermediate_uchar8[-1 * LOCAL_STRIDE];
+    tmp = filt.s2;
+    inter += convert_short8(ref_u8) * tmp;
+    ref_u8 = intermediate_uchar8[0 * LOCAL_STRIDE];
+    tmp = filt.s3;
+    inter += convert_short8(ref_u8) * tmp;
+    ref_u8 = intermediate_uchar8[1 * LOCAL_STRIDE];
+    tmp = filt.s4;
+    inter += convert_short8(ref_u8) * tmp;
+    ref_u8 = intermediate_uchar8[2 * LOCAL_STRIDE];
+    tmp = filt.s5;
+    inter += convert_short8(ref_u8) * tmp;
+    ref_u8 = intermediate_uchar8[3 * LOCAL_STRIDE];
+    tmp = filt.s6;
+    inter += convert_short8(ref_u8) * tmp;
+    ref_u8 = intermediate_uchar8[4 * LOCAL_STRIDE];
+    tmp = filt.s7;
+    inter += convert_short8(ref_u8) * tmp;
+
+    tmp1 = (1 << 6) + shift_val;
+    inter_out1 = convert_int4(inter.s0123);
+
+    out_uni.s0123 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
+    inter_out1 = convert_int4(inter.s4567);
+
+    out_uni.s4567 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
+    curr_data = vload8(0, cur_frame);
+    CALCULATE_SSE_VAR(curr_data, out_uni)
+    *psum = sum;
+    *psse = sse;    
+  }
+}
+
 __kernel
 __attribute__((reqd_work_group_size(BLOCK_SIZE_IN_PIXELS / NUM_PIXELS_PER_WORKITEM,
                                     BLOCK_SIZE_IN_PIXELS,
@@ -1386,7 +1608,6 @@ void vp9_pick_inter_mode_part1(__global uchar *ref_frame,
 
   int local_col = get_local_id(0);
   int local_row = get_local_id(1);
-  int local_stride = get_local_size(0);
   int mi_row, mi_col;
   int sum;
   uint sse, variance;
@@ -1398,6 +1619,8 @@ void vp9_pick_inter_mode_part1(__global uchar *ref_frame,
   TX_MODE tx_mode = rd_parameters->tx_mode;
   int dc_quant = rd_parameters->dc_quant;
   int ac_quant = rd_parameters->ac_quant;
+  int8 c_squared;
+  short8 c;
 
   global_offset += (VP9_ENC_BORDER_IN_PIXELS * stride) + VP9_ENC_BORDER_IN_PIXELS;
   mv_input      += (group_row * group_stride + group_col);
@@ -1534,7 +1757,6 @@ void vp9_pick_inter_mode_part2(__global uchar *ref_frame,
 
   int local_col = get_local_id(0);
   int local_row = get_local_id(1);
-  int local_stride = get_local_size(0);
 
   int mi_row, mi_col;
 
@@ -1611,7 +1833,7 @@ void vp9_pick_inter_mode_part3(__global uchar *ref_frame,
     __global GPU_OUTPUT *pred_mv
 ) {
 
-  __local uchar8 intermediate_uchar8[(BLOCK_SIZE_IN_PIXELS*(BLOCK_SIZE_IN_PIXELS + 7))/NUM_PIXELS_PER_WORKITEM + 128];
+  __local uchar8 intermediate_uchar8[(BLOCK_SIZE_IN_PIXELS*(BLOCK_SIZE_IN_PIXELS + 7))/NUM_PIXELS_PER_WORKITEM];
   __local int *intermediate_int = (__local int *)intermediate_uchar8;
 
   int global_col = get_global_id(0);
@@ -1624,38 +1846,19 @@ void vp9_pick_inter_mode_part3(__global uchar *ref_frame,
 
   int local_col = get_local_id(0);
   int local_row = get_local_id(1);
-  int local_stride = get_local_size(0);
-
+  
   int mi_row, mi_col;
   int sum;
   uint sse, variance;
-  int rate, actual_rate, newmv_rate = INT32_MAX;
-  int64_t dist, actual_dist, newmv_dist = INT64_MAX;
-  int64_t this_rd, best_rd = INT64_MAX;
-  int newmv_skip_txfm = 0, skip_txfm;
-  TX_SIZE newmv_tx_size, tx_size;
-  TX_MODE tx_mode = rd_parameters->tx_mode;
-  int dc_quant = rd_parameters->dc_quant;
-  int ac_quant = rd_parameters->ac_quant;
+
 
   global_offset += (VP9_ENC_BORDER_IN_PIXELS * stride) + VP9_ENC_BORDER_IN_PIXELS;
-  mv_input      += (group_row * group_stride + group_col);
+  int group_offset = (group_row * group_stride + group_col);
+  mv_input      += group_offset;
 
-#if BLOCK_SIZE_IN_PIXELS == 32
-  int bsize = BLOCK_32X32;
-#elif BLOCK_SIZE_IN_PIXELS == 16
-  int bsize = BLOCK_16X16;
-#elif BLOCK_SIZE_IN_PIXELS == 8
-  int bsize = BLOCK_8X8;
-#endif
-
-  sse_variance_output += (group_row * group_stride + group_col);
-#if BLOCK_SIZE_IN_PIXELS != 32
-  pred_mv += (group_row/2 * group_stride/2 + group_col/2);
-#endif
+  sse_variance_output += group_offset;
 
   cur_frame += global_offset;
-  uchar8 curr_data = vload8(0, cur_frame);
   uchar8 pred_data;
   PREDICTION_MODE best_mode = ZEROMV;
   INTERP_FILTER newmv_filter, best_pred_filter = EIGHTTAP;
@@ -1686,6 +1889,107 @@ void vp9_pick_inter_mode_part3(__global uchar *ref_frame,
     goto exit;
   }
 
+  out_mv.mv = sse_variance_output->mv;
+  int mv_row = out_mv.mv.row;
+  int mv_col = out_mv.mv.col;
+  int mv_offset = ((mv_row >> SUBPEL_BITS) * stride) + (mv_col >> SUBPEL_BITS);
+  int horz_subpel = (mv_col & SUBPEL_MASK) << 1;
+  int vert_subpel = (mv_row & SUBPEL_MASK) << 1;
+
+  ref_frame += global_offset + mv_offset;
+
+  int filter_type;
+
+  filter_type = EIGHTTAP;
+  inter_prediction(ref_frame, cur_frame, stride, horz_subpel, vert_subpel,
+                          filter_type, intermediate_uchar8, 
+                          &sse_variance_output->sum[filter_type],
+                          &sse_variance_output->sse[filter_type]);
+    
+  if(mv_input->filter_type == SWITCHABLE && (horz_subpel || vert_subpel))
+  {
+    filter_type = EIGHTTAP_SMOOTH;
+    inter_prediction(ref_frame, cur_frame, stride, horz_subpel, vert_subpel,
+                            filter_type, intermediate_uchar8,
+                            &sse_variance_output->sum[filter_type],
+                            &sse_variance_output->sse[filter_type]);
+
+    filter_type = EIGHTTAP_SHARP;
+    inter_prediction(ref_frame, cur_frame, stride, horz_subpel, vert_subpel,
+                            filter_type, intermediate_uchar8,
+                            &sse_variance_output->sum[filter_type],
+                            &sse_variance_output->sse[filter_type]);
+
+  }
+
+exit:
+  return;
+}
+
+__kernel
+void vp9_pick_inter_mode_part4(__global uchar *ref_frame,
+    __global uchar *cur_frame,
+    int stride,
+    __global GPU_INPUT *mv_input,
+    __global GPU_OUTPUT *sse_variance_output,
+    __global GPU_RD_PARAMETERS *rd_parameters,
+    int mi_rows,
+    int mi_cols,
+    __global GPU_OUTPUT *pred_mv
+) {
+
+
+  int global_col = get_global_id(0);
+  int global_row = get_global_id(1);
+  int global_stride = get_global_size(0);
+  uchar8 curr_data;
+
+  int mi_row, mi_col;
+  int sum;
+  uint sse, variance;
+  int rate, actual_rate, newmv_rate = INT32_MAX;
+  int64_t dist, actual_dist, newmv_dist = INT64_MAX;
+  int64_t this_rd, best_rd = INT64_MAX;
+  int newmv_skip_txfm = 0, skip_txfm;
+  TX_SIZE newmv_tx_size, tx_size;
+  TX_MODE tx_mode = rd_parameters->tx_mode;
+  int dc_quant = rd_parameters->dc_quant;
+  int ac_quant = rd_parameters->ac_quant;
+
+  mv_input      += (global_row * global_stride + global_col);
+
+#if BLOCK_SIZE_IN_PIXELS == 32
+  int bsize = BLOCK_32X32;
+#elif BLOCK_SIZE_IN_PIXELS == 16
+  int bsize = BLOCK_16X16;
+#elif BLOCK_SIZE_IN_PIXELS == 8
+  int bsize = BLOCK_8X8;
+#endif
+
+  sse_variance_output += (global_row * global_stride + global_col);
+
+  PREDICTION_MODE best_mode = ZEROMV;
+  INTERP_FILTER newmv_filter, best_pred_filter = EIGHTTAP;
+
+  GPU_OUTPUT_STAGE1 out_mv;
+
+  if(!mv_input->do_compute)
+    goto exit;
+
+  if(!mv_input->do_newmv)
+    goto exit;
+
+  mi_row = global_row * (BLOCK_SIZE_IN_PIXELS / NUM_PIXELS_PER_WORKITEM);
+  mi_col = global_col * (BLOCK_SIZE_IN_PIXELS / NUM_PIXELS_PER_WORKITEM);
+
+  int mi_step = ((BLOCK_SIZE_IN_PIXELS / 8) / 2);
+  if (mi_col + mi_step >= mi_cols) {
+    goto exit;
+  }
+  if (mi_row + mi_step >= mi_rows) {
+    goto exit;
+  }
+
   // ZEROMV not required for BLOCK_32X32
   if (BLOCK_SIZE_IN_PIXELS != 32) {
     best_rd = sse_variance_output->best_rd;
@@ -1693,25 +1997,22 @@ void vp9_pick_inter_mode_part3(__global uchar *ref_frame,
   out_mv.mv = sse_variance_output->mv;
   int mv_row = out_mv.mv.row;
   int mv_col = out_mv.mv.col;
-  int rate_mv = sse_variance_output->rate_mv;
-  int mv_offset = ((mv_row >> SUBPEL_BITS) * stride) + (mv_col >> SUBPEL_BITS);
   int horz_subpel = (mv_col & SUBPEL_MASK) << 1;
   int vert_subpel = (mv_row & SUBPEL_MASK) << 1;
-
-  ref_frame += global_offset + mv_offset;
+  
+  int rate_mv = sse_variance_output->rate_mv;
 
   int64_t cost, best_cost = INT64_MAX;
   int filter_type, end_filter_type;
-  if(mv_input->filter_type == SWITCHABLE)
+  if(mv_input->filter_type == SWITCHABLE && (horz_subpel || vert_subpel))
     end_filter_type = EIGHTTAP_SHARP;
   else
     end_filter_type = EIGHTTAP;
 
   for (filter_type = EIGHTTAP; filter_type <= end_filter_type; ++filter_type) {
-    pred_data = inter_prediction(ref_frame, stride, horz_subpel, vert_subpel,
-                            filter_type, intermediate_uchar8);
-
-    CALCULATE_SSE_VAR(curr_data, pred_data)
+    sum = sse_variance_output->sum[filter_type];
+    sse = sse_variance_output->sse[filter_type];    
+    variance = sse - ((long)sum * sum) / (BLOCK_SIZE_IN_PIXELS * BLOCK_SIZE_IN_PIXELS); 
     CALCULATE_RATE_DIST
     cost = RDCOST(rd_parameters->rd_mult, rd_parameters->rd_div,
       rd_parameters->switchable_interp_costs[filter_type] + actual_rate, actual_dist);
@@ -1743,227 +2044,3 @@ exit:
   return;
 }
 
-uchar8 inter_prediction(__global uchar *ref_data,
-    int stride,
-    int horz_subpel,
-    int vert_subpel,
-    int filter_type,
-    __local uchar8 *intermediate
-) {
-  __global uchar8 *out_data_vec8;
-  __local uchar8 *intermediate_uchar8;
-
-  uchar16 ref;
-  uchar8 ref_u8;
-
-  short8 inter, inter1;
-  int4 inter_out1;
-
-  int local_col = get_local_id(0);
-  int local_row = get_local_id(1);
-  int local_stride = get_local_size(0);
-  int local_height = get_local_size(1);
-  int inter_offset = (local_row * local_stride) + local_col;
-
-  short8 tmp;
-  int4 shift_val=(int4)(1<<14);
-  int4 tmp1;
-  uchar8 temp_out;
-  uchar8 out_uni;
-  uchar8 out_bi;
-
-  if (!vert_subpel) {
-    /* L0 only x_frac */
-    char8 filt = filter[filter_type][horz_subpel];
-
-    ref = vload16(0, ref_data - 3);
-
-    inter = (short8)(-1 << 14);
-
-    tmp = filt.s0;
-    inter += convert_short8(ref.s01234567) * tmp;
-    tmp = filt.s1;
-    inter += convert_short8(ref.s12345678) * tmp;
-    tmp = filt.s2;
-    inter += convert_short8(ref.s23456789) * tmp;
-    tmp = filt.s3;
-    inter += convert_short8(ref.s3456789a) * tmp;
-    tmp = filt.s4;
-    inter += convert_short8(ref.s456789ab) * tmp;
-    tmp = filt.s5;
-    inter += convert_short8(ref.s56789abc) * tmp;
-    tmp = filt.s6;
-    inter += convert_short8(ref.s6789abcd) * tmp;
-    tmp = filt.s7;
-    inter += convert_short8(ref.s789abcde) * tmp;
-
-    if (horz_subpel == 0) {
-      tmp1 = (1 << 5) + shift_val;
-      inter_out1 = convert_int4(inter.s0123);
-
-      out_uni.s0123 = convert_uchar4_sat((inter_out1 + tmp1) >> 6);
-      inter_out1 = convert_int4(inter.s4567);
-
-      out_uni.s4567 = convert_uchar4_sat((inter_out1 + tmp1) >> 6);
-    } else {
-      tmp1 = (1<<6)+shift_val;
-      inter_out1 = convert_int4(inter.s0123);
-
-      out_uni.s0123 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
-      inter_out1 =convert_int4(inter.s4567);
-
-      out_uni.s4567 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
-    }
-  } else if(!horz_subpel) {
-    /* L0 only y_frac */
-    char8 filt = filter[filter_type][vert_subpel];
-    inter = (short8)(-1 << 14);
-    ref_data -= (3*stride);
-    ref_u8 = vload8(0, ref_data);
-    tmp = filt.s0;
-    inter += convert_short8(ref_u8) * tmp;
-
-    ref_data += stride;
-    ref_u8 = vload8(0, ref_data);
-    tmp = filt.s1;
-    inter += convert_short8(ref_u8) * tmp;
-
-    ref_data += stride;
-    ref_u8 = vload8(0, ref_data);
-    tmp = filt.s2;
-    inter += convert_short8(ref_u8) * tmp;
-
-    ref_data += stride;
-    ref_u8 = vload8(0, ref_data);
-    tmp = filt.s3;
-    inter += convert_short8(ref_u8) * tmp;
-
-    ref_data += stride;
-    ref_u8 = vload8(0, ref_data);
-    tmp = filt.s4;
-    inter += convert_short8(ref_u8) * tmp;
-
-    ref_data += stride;
-    ref_u8 = vload8(0, ref_data);
-    tmp = filt.s5;
-    inter += convert_short8(ref_u8) * tmp;
-
-    ref_data += stride;
-    ref_u8 = vload8(0, ref_data);
-    tmp = filt.s6;
-    inter += convert_short8(ref_u8) * tmp;
-
-    ref_data += stride;
-    ref_u8 = vload8(0, ref_data);
-    tmp = filt.s7;
-    inter += convert_short8(ref_u8) * tmp;
-
-    tmp1 = (1 << 6) + shift_val;
-    inter_out1 = convert_int4(inter.s0123);
-
-    out_uni.s0123 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
-    inter_out1 = convert_int4(inter.s4567);
-
-    out_uni.s4567 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
-  } else {
-    char8 filt = filter[filter_type][horz_subpel];
-    ref_data -= (3 * stride);
-    inter = (short8)(-1 << 14);
-    ref = vload16(0, ref_data - 3);
-
-    tmp = filt.s0;
-    inter += convert_short8(ref.s01234567) * tmp;
-    tmp = filt.s1;
-    inter += convert_short8(ref.s12345678) * tmp;
-    tmp = filt.s2;
-    inter += convert_short8(ref.s23456789) * tmp;
-    tmp = filt.s3;
-    inter += convert_short8(ref.s3456789a) * tmp;
-    tmp = filt.s4;
-    inter += convert_short8(ref.s456789ab) * tmp;
-    tmp = filt.s5;
-    inter += convert_short8(ref.s56789abc) * tmp;
-    tmp = filt.s6;
-    inter += convert_short8(ref.s6789abcd) * tmp;
-    tmp = filt.s7;
-    inter += convert_short8(ref.s789abcde) * tmp;
-
-    tmp1 = (1 << 6) + shift_val;
-    inter_out1 = convert_int4(inter.s0123);
-    temp_out.s0123 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
-    inter_out1 = convert_int4(inter.s4567);
-    temp_out.s4567 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
-
-    barrier(CLK_LOCAL_MEM_FENCE);
-    intermediate[inter_offset] = temp_out;
-
-    if (local_row < 7) {
-      ref_data += (BLOCK_SIZE_IN_PIXELS * stride);
-
-      ref = vload16(0, ref_data - 3);
-      inter = (short8)(-1 << 14);
-      tmp = filt.s0;
-      inter += convert_short8(ref.s01234567) * tmp;
-      tmp = filt.s1;
-      inter += convert_short8(ref.s12345678) * tmp;
-      tmp = filt.s2;
-      inter += convert_short8(ref.s23456789) * tmp;
-      tmp = filt.s3;
-      inter += convert_short8(ref.s3456789a) * tmp;
-      tmp = filt.s4;
-      inter += convert_short8(ref.s456789ab) * tmp;
-      tmp = filt.s5;
-      inter += convert_short8(ref.s56789abc) * tmp;
-      tmp = filt.s6;
-      inter += convert_short8(ref.s6789abcd) * tmp;
-      tmp = filt.s7;
-      inter += convert_short8(ref.s789abcde) * tmp;
-      tmp1 = (1 << 6) + shift_val;
-      inter_out1 = convert_int4(inter.s0123);
-      temp_out.s0123 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
-      inter_out1 = convert_int4(inter.s4567);
-      temp_out.s4567 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
-      intermediate[inter_offset + local_stride * local_height] = temp_out;
-    }
-
-    barrier(CLK_LOCAL_MEM_FENCE);
-
-    intermediate_uchar8 = intermediate + inter_offset + (3 * local_stride);
-    filt = filter[filter_type][vert_subpel];
-    inter = (short8)(-1 << 14);
-    ref_u8 = intermediate_uchar8[-3 * local_stride];
-    tmp = filt.s0;
-    inter += convert_short8(ref_u8) * tmp;
-    ref_u8 = intermediate_uchar8[-2 * local_stride];
-    tmp = filt.s1;
-    inter += convert_short8(ref_u8) * tmp;
-    ref_u8 = intermediate_uchar8[-1 * local_stride];
-    tmp = filt.s2;
-    inter += convert_short8(ref_u8) * tmp;
-    ref_u8 = intermediate_uchar8[0 * local_stride];
-    tmp = filt.s3;
-    inter += convert_short8(ref_u8) * tmp;
-    ref_u8 = intermediate_uchar8[1 * local_stride];
-    tmp = filt.s4;
-    inter += convert_short8(ref_u8) * tmp;
-    ref_u8 = intermediate_uchar8[2 * local_stride];
-    tmp = filt.s5;
-    inter += convert_short8(ref_u8) * tmp;
-    ref_u8 = intermediate_uchar8[3 * local_stride];
-    tmp = filt.s6;
-    inter += convert_short8(ref_u8) * tmp;
-    ref_u8 = intermediate_uchar8[4 * local_stride];
-    tmp = filt.s7;
-    inter += convert_short8(ref_u8) * tmp;
-
-    tmp1 = (1 << 6) + shift_val;
-    inter_out1 = convert_int4(inter.s0123);
-
-    out_uni.s0123 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
-    inter_out1 = convert_int4(inter.s4567);
-
-    out_uni.s4567 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
-  }
-
-  return out_uni;
-}

@@ -198,6 +198,32 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
     if (status != CL_SUCCESS)
       goto fail;
 
+    status  = clSetKernelArg(opencl->vp9_pick_inter_mode_part4[gpu_bsize], 0,
+                             sizeof(cl_mem), &opencl->reference_frame);
+    status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part4[gpu_bsize], 1,
+                             sizeof(cl_mem), &opencl->current_frame);
+    status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part4[gpu_bsize], 2,
+                             sizeof(cl_int), &opencl->stride);
+    status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part4[gpu_bsize], 3,
+                             sizeof(cl_mem), &opencl->input_mv[gpu_bsize]);
+    status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part4[gpu_bsize], 4,
+                             sizeof(cl_mem), &opencl->output_rd[gpu_bsize]);
+    status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part4[gpu_bsize], 5,
+                             sizeof(cl_mem), &opencl->rd_parameters);
+    status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part4[gpu_bsize], 6,
+                             sizeof(cl_int), &opencl->mi_rows);
+    status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part4[gpu_bsize], 7,
+                             sizeof(cl_int), &opencl->mi_cols);
+    // For 32x32 block this parameter is ignored. Used only for other block
+    // sizes
+    status |= clSetKernelArg(
+        opencl->vp9_pick_inter_mode_part4[gpu_bsize], 8,
+        sizeof(cl_mem),
+        &opencl->output_rd[gpu_bsize != GPU_BLOCK_32X32 ? gpu_bsize - 1 : 0]);
+
+    if (status != CL_SUCCESS)
+      goto fail;
+
   }
 
   return;
@@ -397,6 +423,9 @@ static void vp9_opencl_remove(VP9_COMP *cpi) {
     status = clReleaseKernel(opencl->vp9_pick_inter_mode_part3[gpu_bsize]);
     if (status != CL_SUCCESS)
       goto fail;
+    status = clReleaseKernel(opencl->vp9_pick_inter_mode_part4[gpu_bsize]);
+    if (status != CL_SUCCESS)
+      goto fail;
   }
 
   status = clReleaseCommandQueue(opencl->cmd_queue);
@@ -533,6 +562,11 @@ int vp9_opencl_init(VP9_GPU *gpu) {
 
     opencl->vp9_pick_inter_mode_part3[gpu_bsize] = clCreateKernel(
         program, "vp9_pick_inter_mode_part3", &status);
+    if (status != CL_SUCCESS)
+      goto fail;
+
+    opencl->vp9_pick_inter_mode_part4[gpu_bsize] = clCreateKernel(
+        program, "vp9_pick_inter_mode_part4", &status);
     if (status != CL_SUCCESS)
       goto fail;
   }
