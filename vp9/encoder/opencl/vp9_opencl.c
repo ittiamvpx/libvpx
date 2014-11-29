@@ -397,6 +397,16 @@ static GPU_OUTPUT* vp9_opencl_execute(VP9_COMP *cpi,
                                   0, NULL, NULL);
   assert(status == CL_SUCCESS);
 
+  global_size[0] = num_block_cols;
+  global_size[1] = num_block_rows;
+  status = clEnqueueNDRangeKernel(opencl->cmd_queue,
+                                  opencl->vp9_pick_inter_mode_part4[gpu_bsize],
+                                  2,
+                                  NULL,
+                                  global_size, NULL,
+                                  0, NULL, NULL);
+  assert(status == CL_SUCCESS);
+
   opencl->output_rd_mapped[gpu_bsize] = clEnqueueMapBuffer(
       opencl->cmd_queue, opencl->output_rd[gpu_bsize],
       CL_TRUE, CL_MAP_READ, 0,
