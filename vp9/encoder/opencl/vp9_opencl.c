@@ -19,6 +19,8 @@
 #define PREFIX_PATH "../../vp9/encoder/opencl/"
 #endif
 
+static const int pixel_rows_per_workitem_log2[GPU_BLOCK_SIZES] = {3, 2, 0};
+
 static char *read_src(const char *src_file_name) {
   FILE *fp;
   int32_t err;
@@ -389,6 +391,8 @@ static GPU_OUTPUT* vp9_opencl_execute(VP9_COMP *cpi,
                                   0, NULL, NULL);
   assert(status == CL_SUCCESS);
 
+  local_size[1]  >>= pixel_rows_per_workitem_log2[gpu_bsize];
+  global_size[1] >>= pixel_rows_per_workitem_log2[gpu_bsize];
   status = clEnqueueNDRangeKernel(opencl->cmd_queue,
                                   opencl->vp9_pick_inter_mode_part3[gpu_bsize],
                                   2,
@@ -466,9 +470,9 @@ int vp9_opencl_init(VP9_GPU *gpu) {
 
   // TODO(karthick-ittiam) : Fix this hardcoding
   const char *build_options[GPU_BLOCK_SIZES] = {
-      "-DBLOCK_SIZE_IN_PIXELS=32",
-      "-DBLOCK_SIZE_IN_PIXELS=16",
-      "-DBLOCK_SIZE_IN_PIXELS=8" };
+      "-DBLOCK_SIZE_IN_PIXELS=32 -DPIXEL_ROWS_PER_WORKITEM=8",
+      "-DBLOCK_SIZE_IN_PIXELS=16 -DPIXEL_ROWS_PER_WORKITEM=4",
+      "-DBLOCK_SIZE_IN_PIXELS=8 -DPIXEL_ROWS_PER_WORKITEM=1" };
   char *kernel_src;
   GPU_BLOCK_SIZE gpu_bsize;
   gpu->compute_framework = vpx_calloc(1, sizeof(VP9_OPENCL));

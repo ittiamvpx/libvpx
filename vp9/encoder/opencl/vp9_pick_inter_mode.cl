@@ -189,7 +189,7 @@ typedef enum {
 #define MIN(x, y) (((x) < (y)) ? (x) : (y))
 #define MAX(x, y) (((x) > (y)) ? (x) : (y))
 
-#define ACCUMULATE(block_size_in_pixels,inter)      \
+#define ACCUMULATE(block_size_in_pixels, inter)     \
   if (block_size_in_pixels >= 32) {                 \
     barrier(CLK_LOCAL_MEM_FENCE);                   \
     if (local_col < 2)                              \
@@ -219,6 +219,43 @@ typedef enum {
   barrier(CLK_LOCAL_MEM_FENCE);                     \
   if (local_row < 1 && local_col == 0)              \
     inter[(local_row * LOCAL_STRIDE)] += inter[(local_row + 1) * LOCAL_STRIDE];
+
+#define ACCUMULATE_INTER_PRED(block_size_in_pixels, inter)                     \
+  if (block_size_in_pixels >= 32) {                                            \
+    barrier(CLK_LOCAL_MEM_FENCE);                                              \
+    if (local_col < 2)                                                         \
+      inter[(local_row * LOCAL_STRIDE) + local_col] += inter[(local_row * LOCAL_STRIDE) + local_col + 2]; \
+  }                                                                            \
+  if (block_size_in_pixels >= 16) {                                            \
+    barrier(CLK_LOCAL_MEM_FENCE);                                              \
+    if (local_col < 1)                                                         \
+      inter[(local_row * LOCAL_STRIDE)] += inter[(local_row * LOCAL_STRIDE) + 1]; \
+  }                                                                            \
+  if (block_size_in_pixels / PIXEL_ROWS_PER_WORKITEM >= 32) {                  \
+    barrier(CLK_LOCAL_MEM_FENCE);                                              \
+    if (local_row < 16 && local_col == 0)                                      \
+      inter[(local_row * LOCAL_STRIDE)] += inter[(local_row + 16) * LOCAL_STRIDE];\
+  }                                                                            \
+  if (block_size_in_pixels / PIXEL_ROWS_PER_WORKITEM >= 16) {                  \
+    barrier(CLK_LOCAL_MEM_FENCE);                                              \
+    if (local_row < 8 && local_col == 0)                                       \
+      inter[(local_row * LOCAL_STRIDE)] += inter[(local_row + 8) * LOCAL_STRIDE]; \
+  }                                                                            \
+  if (block_size_in_pixels / PIXEL_ROWS_PER_WORKITEM >= 8) {                   \
+    barrier(CLK_LOCAL_MEM_FENCE);                                              \
+    if (local_row < 4 && local_col == 0)                                       \
+      inter[(local_row * LOCAL_STRIDE)] += inter[(local_row + 4) * LOCAL_STRIDE]; \
+  }                                                                            \
+  if (block_size_in_pixels / PIXEL_ROWS_PER_WORKITEM >= 4) {                   \
+    barrier(CLK_LOCAL_MEM_FENCE);                                              \
+    if (local_row < 2 && local_col == 0)                                       \
+      inter[(local_row * LOCAL_STRIDE)] += inter[(local_row + 2) * LOCAL_STRIDE]; \
+  }                                                                            \
+  if (block_size_in_pixels / PIXEL_ROWS_PER_WORKITEM >= 2) {                   \
+    barrier(CLK_LOCAL_MEM_FENCE);                                              \
+    if (local_row < 1 && local_col == 0)                                       \
+      inter[(local_row * LOCAL_STRIDE)] += inter[(local_row + 1) * LOCAL_STRIDE]; \
+  }
 
 #define CHECK_BETTER                                         \
   {                                                          \
@@ -372,6 +409,23 @@ typedef enum {
     barrier(CLK_LOCAL_MEM_FENCE);                                   \
     sse = intermediate_int[0];                                      \
     variance = sse - ((long)sum * sum) / (BLOCK_SIZE_IN_PIXELS * BLOCK_SIZE_IN_PIXELS);
+
+#define ACCUMULATE_SUM_SSE_INTER_PRED(sum, sse)                         \
+    sum.s0123 = sum.s0123 + sum.s4567;                                  \
+    sum.s01   = sum.s01   + sum.s23;                                    \
+    sum.s0    = sum.s0    + sum.s1;                                     \
+    barrier(CLK_LOCAL_MEM_FENCE);                                       \
+    intermediate_int[(local_row * LOCAL_STRIDE) + local_col] = sum.s0;  \
+    ACCUMULATE_INTER_PRED(BLOCK_SIZE_IN_PIXELS, intermediate_int)       \
+    barrier(CLK_LOCAL_MEM_FENCE);                                       \
+    *psum = intermediate_int[0];                                        \
+    sse.s01   = sse.s01   + sse.s23;                                    \
+    sse.s0    = sse.s0    + sse.s1;                                     \
+    barrier(CLK_LOCAL_MEM_FENCE);                                       \
+    intermediate_int[(local_row * LOCAL_STRIDE) + local_col] = sse.s0;  \
+    ACCUMULATE_INTER_PRED(BLOCK_SIZE_IN_PIXELS, intermediate_int)       \
+    barrier(CLK_LOCAL_MEM_FENCE);                                       \
+    *psse = intermediate_int[0];
 
 #define CALCULATE_RATE_DIST                                                 \
   if (tx_mode == TX_MODE_SELECT) {                                          \
@@ -1357,17 +1411,17 @@ inline void inter_prediction(__global uchar *ref_data,
 
   short8 inter, inter1;
   int4 inter_out1;
-  int sum;
-  uint sse, variance;
+  short8 sum = (short8)(0, 0, 0, 0, 0, 0, 0, 0);
+  uint4 sse = (uint4)(0, 0, 0, 0);
   int8 c_squared;
   short8 c;
 
   int local_col = get_local_id(0);
   int local_row = get_local_id(1);
-  int inter_offset = (local_row * LOCAL_STRIDE) + local_col;
+  int inter_offset = (local_row * LOCAL_STRIDE * PIXEL_ROWS_PER_WORKITEM) + local_col;
 
   short8 tmp;
-  int4 shift_val=(int4)(1<<14);
+  int4 shift_val = (int4)(1 << 14);
   int4 tmp1;
   uchar8 temp_out;
   uchar8 out_uni;
@@ -1378,140 +1432,130 @@ inline void inter_prediction(__global uchar *ref_data,
     /* L0 only x_frac */
     char8 filt = filter[filter_type][horz_subpel];
 
-    ref = vload16(0, ref_data - 3);
+    for(i = 0; i < PIXEL_ROWS_PER_WORKITEM; i++) {
+      ref = vload16(0, ref_data - 3);
 
-    inter = (short8)(-1 << 14);
+      inter = (short8)(-1 << 14);
 
-    tmp = filt.s0;
-    inter += convert_short8(ref.s01234567) * tmp;
-    tmp = filt.s1;
-    inter += convert_short8(ref.s12345678) * tmp;
-    tmp = filt.s2;
-    inter += convert_short8(ref.s23456789) * tmp;
-    tmp = filt.s3;
-    inter += convert_short8(ref.s3456789a) * tmp;
-    tmp = filt.s4;
-    inter += convert_short8(ref.s456789ab) * tmp;
-    tmp = filt.s5;
-    inter += convert_short8(ref.s56789abc) * tmp;
-    tmp = filt.s6;
-    inter += convert_short8(ref.s6789abcd) * tmp;
-    tmp = filt.s7;
-    inter += convert_short8(ref.s789abcde) * tmp;
+      tmp = filt.s0;
+      inter += convert_short8(ref.s01234567) * tmp;
+      tmp = filt.s1;
+      inter += convert_short8(ref.s12345678) * tmp;
+      tmp = filt.s2;
+      inter += convert_short8(ref.s23456789) * tmp;
+      tmp = filt.s3;
+      inter += convert_short8(ref.s3456789a) * tmp;
+      tmp = filt.s4;
+      inter += convert_short8(ref.s456789ab) * tmp;
+      tmp = filt.s5;
+      inter += convert_short8(ref.s56789abc) * tmp;
+      tmp = filt.s6;
+      inter += convert_short8(ref.s6789abcd) * tmp;
+      tmp = filt.s7;
+      inter += convert_short8(ref.s789abcde) * tmp;
 
-    if (horz_subpel == 0) {
-      tmp1 = (1 << 5) + shift_val;
-      inter_out1 = convert_int4(inter.s0123);
+      if (horz_subpel == 0) {
+        tmp1 = (1 << 5) + shift_val;
+        inter_out1 = convert_int4(inter.s0123);
 
-      out_uni.s0123 = convert_uchar4_sat((inter_out1 + tmp1) >> 6);
-      inter_out1 = convert_int4(inter.s4567);
+        out_uni.s0123 = convert_uchar4_sat((inter_out1 + tmp1) >> 6);
+        inter_out1 = convert_int4(inter.s4567);
 
-      out_uni.s4567 = convert_uchar4_sat((inter_out1 + tmp1) >> 6);
-    } else {
-      tmp1 = (1<<6)+shift_val;
-      inter_out1 = convert_int4(inter.s0123);
+        out_uni.s4567 = convert_uchar4_sat((inter_out1 + tmp1) >> 6);
+      } else {
+        tmp1 = (1 << 6) + shift_val;
+        inter_out1 = convert_int4(inter.s0123);
 
-      out_uni.s0123 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
-      inter_out1 =convert_int4(inter.s4567);
+        out_uni.s0123 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
+        inter_out1 =convert_int4(inter.s4567);
 
-      out_uni.s4567 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
+        out_uni.s4567 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
+      }
+      
+      curr_data = vload8(0, cur_frame);
+      short8 diff = convert_short8(curr_data) - convert_short8(out_uni);
+      sum += diff;
+      sse += convert_uint4(convert_int4(diff.s0123) * convert_int4(diff.s0123));
+      sse += convert_uint4(convert_int4(diff.s4567) * convert_int4(diff.s4567));
+      
+      ref_data += stride;
+      cur_frame += stride;
     }
-    curr_data = vload8(0, cur_frame);
-    CALCULATE_SSE_VAR(curr_data, out_uni)
-    *psum = sum;
-    *psse = sse;    
+    ACCUMULATE_SUM_SSE_INTER_PRED(sum, sse)
   } else if(!horz_subpel) {
     /* L0 only y_frac */
     char8 filt = filter[filter_type][vert_subpel];
-    inter = (short8)(-1 << 14);
-    ref_data -= (3*stride);
-    ref_u8 = vload8(0, ref_data);
-    tmp = filt.s0;
-    inter += convert_short8(ref_u8) * tmp;
+    ref_data -= (3 * stride);
+    for(i = 0; i < PIXEL_ROWS_PER_WORKITEM; i++) {
 
-    ref_data += stride;
-    ref_u8 = vload8(0, ref_data);
-    tmp = filt.s1;
-    inter += convert_short8(ref_u8) * tmp;
+      inter = (short8)(-1 << 14);
+      ref_u8 = vload8(0, ref_data);
+      tmp = filt.s0;
+      inter += convert_short8(ref_u8) * tmp;
 
-    ref_data += stride;
-    ref_u8 = vload8(0, ref_data);
-    tmp = filt.s2;
-    inter += convert_short8(ref_u8) * tmp;
+      ref_data += stride;
+      ref_u8 = vload8(0, ref_data);
+      tmp = filt.s1;
+      inter += convert_short8(ref_u8) * tmp;
 
-    ref_data += stride;
-    ref_u8 = vload8(0, ref_data);
-    tmp = filt.s3;
-    inter += convert_short8(ref_u8) * tmp;
+      ref_data += stride;
+      ref_u8 = vload8(0, ref_data);
+      tmp = filt.s2;
+      inter += convert_short8(ref_u8) * tmp;
 
-    ref_data += stride;
-    ref_u8 = vload8(0, ref_data);
-    tmp = filt.s4;
-    inter += convert_short8(ref_u8) * tmp;
+      ref_data += stride;
+      ref_u8 = vload8(0, ref_data);
+      tmp = filt.s3;
+      inter += convert_short8(ref_u8) * tmp;
 
-    ref_data += stride;
-    ref_u8 = vload8(0, ref_data);
-    tmp = filt.s5;
-    inter += convert_short8(ref_u8) * tmp;
+      ref_data += stride;
+      ref_u8 = vload8(0, ref_data);
+      tmp = filt.s4;
+      inter += convert_short8(ref_u8) * tmp;
 
-    ref_data += stride;
-    ref_u8 = vload8(0, ref_data);
-    tmp = filt.s6;
-    inter += convert_short8(ref_u8) * tmp;
+      ref_data += stride;
+      ref_u8 = vload8(0, ref_data);
+      tmp = filt.s5;
+      inter += convert_short8(ref_u8) * tmp;
 
-    ref_data += stride;
-    ref_u8 = vload8(0, ref_data);
-    tmp = filt.s7;
-    inter += convert_short8(ref_u8) * tmp;
+      ref_data += stride;
+      ref_u8 = vload8(0, ref_data);
+      tmp = filt.s6;
+      inter += convert_short8(ref_u8) * tmp;
 
-    tmp1 = (1 << 6) + shift_val;
-    inter_out1 = convert_int4(inter.s0123);
+      ref_data += stride;
+      ref_u8 = vload8(0, ref_data);
+      tmp = filt.s7;
+      inter += convert_short8(ref_u8) * tmp;
 
-    out_uni.s0123 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
-    inter_out1 = convert_int4(inter.s4567);
+      tmp1 = (1 << 6) + shift_val;
+      inter_out1 = convert_int4(inter.s0123);
 
-    out_uni.s4567 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
-    curr_data = vload8(0, cur_frame);
-    CALCULATE_SSE_VAR(curr_data, out_uni)
-    *psum = sum;
-    *psse = sse;    
+      out_uni.s0123 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
+      inter_out1 = convert_int4(inter.s4567);
+
+      out_uni.s4567 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
+      
+      curr_data = vload8(0, cur_frame);
+      short8 diff = convert_short8(curr_data) - convert_short8(out_uni);
+      sum += diff;
+      sse += convert_uint4(convert_int4(diff.s0123) * convert_int4(diff.s0123));
+      sse += convert_uint4(convert_int4(diff.s4567) * convert_int4(diff.s4567));
+
+      ref_data  -= 6 * stride;
+      cur_frame += stride;
+    }
+    ACCUMULATE_SUM_SSE_INTER_PRED(sum, sse)
   } else {
     char8 filt = filter[filter_type][horz_subpel];
     ref_data -= (3 * stride);
-    inter = (short8)(-1 << 14);
-    ref = vload16(0, ref_data - 3);
-
-    tmp = filt.s0;
-    inter += convert_short8(ref.s01234567) * tmp;
-    tmp = filt.s1;
-    inter += convert_short8(ref.s12345678) * tmp;
-    tmp = filt.s2;
-    inter += convert_short8(ref.s23456789) * tmp;
-    tmp = filt.s3;
-    inter += convert_short8(ref.s3456789a) * tmp;
-    tmp = filt.s4;
-    inter += convert_short8(ref.s456789ab) * tmp;
-    tmp = filt.s5;
-    inter += convert_short8(ref.s56789abc) * tmp;
-    tmp = filt.s6;
-    inter += convert_short8(ref.s6789abcd) * tmp;
-    tmp = filt.s7;
-    inter += convert_short8(ref.s789abcde) * tmp;
-
-    tmp1 = (1 << 6) + shift_val;
-    inter_out1 = convert_int4(inter.s0123);
-    temp_out.s0123 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
-    inter_out1 = convert_int4(inter.s4567);
-    temp_out.s4567 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
 
     barrier(CLK_LOCAL_MEM_FENCE);
-    intermediate[inter_offset] = temp_out;
 
-    if (local_row < 7) {
-      ref_data += (BLOCK_SIZE_IN_PIXELS * stride);
-
-      ref = vload16(0, ref_data - 3);
+    for(i = 0; i < PIXEL_ROWS_PER_WORKITEM; i++) {
       inter = (short8)(-1 << 14);
+      ref = vload16(0, ref_data - 3);
+
       tmp = filt.s0;
       inter += convert_short8(ref.s01234567) * tmp;
       tmp = filt.s1;
@@ -1533,50 +1577,97 @@ inline void inter_prediction(__global uchar *ref_data,
       temp_out.s0123 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
       inter_out1 = convert_int4(inter.s4567);
       temp_out.s4567 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
-      intermediate[inter_offset + LOCAL_STRIDE * LOCAL_HEIGHT] = temp_out;
+      intermediate[inter_offset] = temp_out;
+
+      ref_data += stride;
+      inter_offset += LOCAL_STRIDE;
     }
 
-    barrier(CLK_LOCAL_MEM_FENCE);
+    if (local_row < 8 / PIXEL_ROWS_PER_WORKITEM) {
+      ref_data += (BLOCK_SIZE_IN_PIXELS - PIXEL_ROWS_PER_WORKITEM) * stride;
+      inter_offset += (BLOCK_SIZE_IN_PIXELS - PIXEL_ROWS_PER_WORKITEM) * LOCAL_STRIDE;
 
+      for(i = 0; i < PIXEL_ROWS_PER_WORKITEM; i++) {
+        ref = vload16(0, ref_data - 3);
+        inter = (short8)(-1 << 14);
+        tmp = filt.s0;
+        inter += convert_short8(ref.s01234567) * tmp;
+        tmp = filt.s1;
+        inter += convert_short8(ref.s12345678) * tmp;
+        tmp = filt.s2;
+        inter += convert_short8(ref.s23456789) * tmp;
+        tmp = filt.s3;
+        inter += convert_short8(ref.s3456789a) * tmp;
+        tmp = filt.s4;
+        inter += convert_short8(ref.s456789ab) * tmp;
+        tmp = filt.s5;
+        inter += convert_short8(ref.s56789abc) * tmp;
+        tmp = filt.s6;
+        inter += convert_short8(ref.s6789abcd) * tmp;
+        tmp = filt.s7;
+        inter += convert_short8(ref.s789abcde) * tmp;
+        tmp1 = (1 << 6) + shift_val;
+        inter_out1 = convert_int4(inter.s0123);
+        temp_out.s0123 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
+        inter_out1 = convert_int4(inter.s4567);
+        temp_out.s4567 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
+        intermediate[inter_offset] = temp_out;
+        
+        ref_data += stride;
+        inter_offset += LOCAL_STRIDE;
+      }
+      inter_offset -= BLOCK_SIZE_IN_PIXELS * LOCAL_STRIDE;
+    }
+
+    inter_offset -= (PIXEL_ROWS_PER_WORKITEM) * LOCAL_STRIDE;
     intermediate_uchar8 = intermediate + inter_offset + (3 * LOCAL_STRIDE);
     filt = filter[filter_type][vert_subpel];
-    inter = (short8)(-1 << 14);
-    ref_u8 = intermediate_uchar8[-3 * LOCAL_STRIDE];
-    tmp = filt.s0;
-    inter += convert_short8(ref_u8) * tmp;
-    ref_u8 = intermediate_uchar8[-2 * LOCAL_STRIDE];
-    tmp = filt.s1;
-    inter += convert_short8(ref_u8) * tmp;
-    ref_u8 = intermediate_uchar8[-1 * LOCAL_STRIDE];
-    tmp = filt.s2;
-    inter += convert_short8(ref_u8) * tmp;
-    ref_u8 = intermediate_uchar8[0 * LOCAL_STRIDE];
-    tmp = filt.s3;
-    inter += convert_short8(ref_u8) * tmp;
-    ref_u8 = intermediate_uchar8[1 * LOCAL_STRIDE];
-    tmp = filt.s4;
-    inter += convert_short8(ref_u8) * tmp;
-    ref_u8 = intermediate_uchar8[2 * LOCAL_STRIDE];
-    tmp = filt.s5;
-    inter += convert_short8(ref_u8) * tmp;
-    ref_u8 = intermediate_uchar8[3 * LOCAL_STRIDE];
-    tmp = filt.s6;
-    inter += convert_short8(ref_u8) * tmp;
-    ref_u8 = intermediate_uchar8[4 * LOCAL_STRIDE];
-    tmp = filt.s7;
-    inter += convert_short8(ref_u8) * tmp;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for(i = 0; i < PIXEL_ROWS_PER_WORKITEM; i++) {
+      inter = (short8)(-1 << 14);
+      ref_u8 = intermediate_uchar8[-3 * LOCAL_STRIDE];
+      tmp = filt.s0;
+      inter += convert_short8(ref_u8) * tmp;
+      ref_u8 = intermediate_uchar8[-2 * LOCAL_STRIDE];
+      tmp = filt.s1;
+      inter += convert_short8(ref_u8) * tmp;
+      ref_u8 = intermediate_uchar8[-1 * LOCAL_STRIDE];
+      tmp = filt.s2;
+      inter += convert_short8(ref_u8) * tmp;
+      ref_u8 = intermediate_uchar8[0 * LOCAL_STRIDE];
+      tmp = filt.s3;
+      inter += convert_short8(ref_u8) * tmp;
+      ref_u8 = intermediate_uchar8[1 * LOCAL_STRIDE];
+      tmp = filt.s4;
+      inter += convert_short8(ref_u8) * tmp;
+      ref_u8 = intermediate_uchar8[2 * LOCAL_STRIDE];
+      tmp = filt.s5;
+      inter += convert_short8(ref_u8) * tmp;
+      ref_u8 = intermediate_uchar8[3 * LOCAL_STRIDE];
+      tmp = filt.s6;
+      inter += convert_short8(ref_u8) * tmp;
+      ref_u8 = intermediate_uchar8[4 * LOCAL_STRIDE];
+      tmp = filt.s7;
+      inter += convert_short8(ref_u8) * tmp;
 
-    tmp1 = (1 << 6) + shift_val;
-    inter_out1 = convert_int4(inter.s0123);
+      tmp1 = (1 << 6) + shift_val;
+      inter_out1 = convert_int4(inter.s0123);
 
-    out_uni.s0123 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
-    inter_out1 = convert_int4(inter.s4567);
+      out_uni.s0123 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
+      inter_out1 = convert_int4(inter.s4567);
 
-    out_uni.s4567 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
-    curr_data = vload8(0, cur_frame);
-    CALCULATE_SSE_VAR(curr_data, out_uni)
-    *psum = sum;
-    *psse = sse;    
+      out_uni.s4567 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
+      
+      curr_data = vload8(0, cur_frame);
+      short8 diff = convert_short8(curr_data) - convert_short8(out_uni);
+      sum += diff;
+      sse += convert_uint4(convert_int4(diff.s0123) * convert_int4(diff.s0123));
+      sse += convert_uint4(convert_int4(diff.s4567) * convert_int4(diff.s4567));
+
+      intermediate_uchar8 += LOCAL_STRIDE;
+      cur_frame += stride;
+    }
+    ACCUMULATE_SUM_SSE_INTER_PRED(sum, sse)
   }
 }
 
@@ -1820,7 +1911,7 @@ exit:
 
 __kernel
 __attribute__((reqd_work_group_size(BLOCK_SIZE_IN_PIXELS / NUM_PIXELS_PER_WORKITEM,
-                                    BLOCK_SIZE_IN_PIXELS,
+                                    BLOCK_SIZE_IN_PIXELS / PIXEL_ROWS_PER_WORKITEM,
                                     1)))
 void vp9_pick_inter_mode_part3(__global uchar *ref_frame,
     __global uchar *cur_frame,
@@ -1833,20 +1924,18 @@ void vp9_pick_inter_mode_part3(__global uchar *ref_frame,
     __global GPU_OUTPUT *pred_mv
 ) {
 
-  __local uchar8 intermediate_uchar8[(BLOCK_SIZE_IN_PIXELS*(BLOCK_SIZE_IN_PIXELS + 7))/NUM_PIXELS_PER_WORKITEM];
+  __local uchar8 intermediate_uchar8[(BLOCK_SIZE_IN_PIXELS*(BLOCK_SIZE_IN_PIXELS + 8))/NUM_PIXELS_PER_WORKITEM];
   __local int *intermediate_int = (__local int *)intermediate_uchar8;
 
   int global_col = get_global_id(0);
   int global_row = get_global_id(1);
-  int global_offset = (global_row * stride) + (global_col * NUM_PIXELS_PER_WORKITEM);
+  int global_offset = (global_row * stride * PIXEL_ROWS_PER_WORKITEM) +
+      (global_col * NUM_PIXELS_PER_WORKITEM);
 
   int group_col = get_group_id(0);
   int group_row = get_group_id(1);
   int group_stride = get_num_groups(0);
 
-  int local_col = get_local_id(0);
-  int local_row = get_local_id(1);
-  
   int mi_row, mi_col;
   int sum;
   uint sse, variance;
@@ -1871,7 +1960,7 @@ void vp9_pick_inter_mode_part3(__global uchar *ref_frame,
   if(!mv_input->do_newmv)
     goto exit;
 
-  mi_row = global_row / NUM_PIXELS_PER_WORKITEM;
+  mi_row = global_row / (MI_SIZE / PIXEL_ROWS_PER_WORKITEM);
   mi_col = global_col;
 #if BLOCK_SIZE_IN_PIXELS == 32
   mi_row = (mi_row >> 2) << 2;
@@ -1902,10 +1991,10 @@ void vp9_pick_inter_mode_part3(__global uchar *ref_frame,
 
   filter_type = EIGHTTAP;
   inter_prediction(ref_frame, cur_frame, stride, horz_subpel, vert_subpel,
-                          filter_type, intermediate_uchar8, 
+                          filter_type, intermediate_uchar8,
                           &sse_variance_output->sum[filter_type],
                           &sse_variance_output->sse[filter_type]);
-    
+
   if(mv_input->filter_type == SWITCHABLE && (horz_subpel || vert_subpel))
   {
     filter_type = EIGHTTAP_SMOOTH;
@@ -1999,7 +2088,7 @@ void vp9_pick_inter_mode_part4(__global uchar *ref_frame,
   int mv_col = out_mv.mv.col;
   int horz_subpel = (mv_col & SUBPEL_MASK) << 1;
   int vert_subpel = (mv_row & SUBPEL_MASK) << 1;
-  
+
   int rate_mv = sse_variance_output->rate_mv;
 
   int64_t cost, best_cost = INT64_MAX;
@@ -2011,8 +2100,8 @@ void vp9_pick_inter_mode_part4(__global uchar *ref_frame,
 
   for (filter_type = EIGHTTAP; filter_type <= end_filter_type; ++filter_type) {
     sum = sse_variance_output->sum[filter_type];
-    sse = sse_variance_output->sse[filter_type];    
-    variance = sse - ((long)sum * sum) / (BLOCK_SIZE_IN_PIXELS * BLOCK_SIZE_IN_PIXELS); 
+    sse = sse_variance_output->sse[filter_type];
+    variance = sse - ((long)sum * sum) / (BLOCK_SIZE_IN_PIXELS * BLOCK_SIZE_IN_PIXELS);
     CALCULATE_RATE_DIST
     cost = RDCOST(rd_parameters->rd_mult, rd_parameters->rd_div,
       rd_parameters->switchable_interp_costs[filter_type] + actual_rate, actual_dist);
