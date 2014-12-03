@@ -37,6 +37,7 @@ typedef struct VP9_OPENCL {
   void*            output_rd_mapped[GPU_BLOCK_SIZES];
   cl_mem           rd_parameters;
   void*            rd_parameters_mapped;
+  cl_kernel        vp9_pick_inter_mode_part0[GPU_BLOCK_SIZES];
   cl_kernel        vp9_pick_inter_mode_part1[GPU_BLOCK_SIZES];
   cl_kernel        vp9_pick_inter_mode_part2[GPU_BLOCK_SIZES];
   cl_kernel        vp9_pick_inter_mode_part3[GPU_BLOCK_SIZES];

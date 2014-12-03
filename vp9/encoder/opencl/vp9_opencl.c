@@ -19,7 +19,11 @@
 #define PREFIX_PATH "../../vp9/encoder/opencl/"
 #endif
 
-static const int pixel_rows_per_workitem_log2[GPU_BLOCK_SIZES] = {3, 2, 0};
+static const int pixel_rows_per_workitem_log2_inter_pred[GPU_BLOCK_SIZES]
+                                                         = {3, 2, 0};
+
+static const int pixel_rows_per_workitem_log2_full_pixel_search[GPU_BLOCK_SIZES]
+                                                                = {5, 3, 3};
 
 static char *read_src(const char *src_file_name) {
   FILE *fp;
@@ -120,6 +124,32 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
         NULL,
         &status);
     if (status != CL_SUCCESS || opencl->output_rd[gpu_bsize] == (cl_mem)0)
+      goto fail;
+
+    status  = clSetKernelArg(opencl->vp9_pick_inter_mode_part0[gpu_bsize], 0,
+                             sizeof(cl_mem), &opencl->reference_frame);
+    status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part0[gpu_bsize], 1,
+                             sizeof(cl_mem), &opencl->current_frame);
+    status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part0[gpu_bsize], 2,
+                             sizeof(cl_int), &opencl->stride);
+    status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part0[gpu_bsize], 3,
+                             sizeof(cl_mem), &opencl->input_mv[gpu_bsize]);
+    status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part0[gpu_bsize], 4,
+                             sizeof(cl_mem), &opencl->output_rd[gpu_bsize]);
+    status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part0[gpu_bsize], 5,
+                             sizeof(cl_mem), &opencl->rd_parameters);
+    status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part0[gpu_bsize], 6,
+                             sizeof(cl_int), &opencl->mi_rows);
+    status |= clSetKernelArg(opencl->vp9_pick_inter_mode_part0[gpu_bsize], 7,
+                             sizeof(cl_int), &opencl->mi_cols);
+    // For 32x32 block this parameter is ignored. Used only for other block
+    // sizes
+    status |= clSetKernelArg(
+        opencl->vp9_pick_inter_mode_part0[gpu_bsize], 8,
+        sizeof(cl_mem),
+        &opencl->output_rd[gpu_bsize != GPU_BLOCK_32X32 ? gpu_bsize - 1 : 0]);
+
+    if (status != CL_SUCCESS)
       goto fail;
 
     status  = clSetKernelArg(opencl->vp9_pick_inter_mode_part1[gpu_bsize], 0,
@@ -308,6 +338,7 @@ static GPU_OUTPUT* vp9_opencl_execute(VP9_COMP *cpi,
   const size_t workitem_size[2] = { NUM_PIXELS_PER_WORKITEM, 1 };
   size_t MB_size[2];
   size_t local_size[2];
+  size_t local_size_full_pixel_search[2], local_size_inter_pred[2];
   size_t global_size[2];
   const int b_width_in_pixels_log2 = b_width_log2(bsize) + 2;
   const int b_height_in_pixels_log2 = b_height_log2(bsize) + 2;
@@ -329,9 +360,6 @@ static GPU_OUTPUT* vp9_opencl_execute(VP9_COMP *cpi,
 
   local_size[0] = MB_size[0] / workitem_size[0];
   local_size[1] = MB_size[1] / workitem_size[1];
-
-  global_size[0] = num_block_cols * local_size[0];
-  global_size[1] = num_block_rows * local_size[1];
 
   status = clEnqueueWriteBuffer(opencl->cmd_queue, opencl->reference_frame,
                                 CL_TRUE, 0,
@@ -375,6 +403,29 @@ static GPU_OUTPUT* vp9_opencl_execute(VP9_COMP *cpi,
     opencl->rd_parameters_mapped = NULL;
   }
 
+  local_size_full_pixel_search[0] = local_size[0];
+  local_size_full_pixel_search[1] =
+      local_size[1] >> pixel_rows_per_workitem_log2_full_pixel_search[gpu_bsize];
+
+  global_size[0] = num_block_cols * local_size_full_pixel_search[0];
+  global_size[1] = num_block_rows * local_size_full_pixel_search[1];
+
+  if(gpu_bsize == GPU_BLOCK_8X8)
+    assert(local_size_full_pixel_search[0] * local_size_full_pixel_search[1] == 1);
+
+  status = clEnqueueNDRangeKernel(
+      opencl->cmd_queue, opencl->vp9_pick_inter_mode_part0[gpu_bsize],
+      2,
+      NULL,
+      global_size,
+      (gpu_bsize == GPU_BLOCK_8X8) ? NULL : local_size_full_pixel_search,
+      0, NULL, NULL);
+  assert(status == CL_SUCCESS);
+
+
+  global_size[0] = num_block_cols * local_size[0];
+  global_size[1] = num_block_rows * local_size[1];
+
   status = clEnqueueNDRangeKernel(opencl->cmd_queue,
                                   opencl->vp9_pick_inter_mode_part1[gpu_bsize],
                                   2,
@@ -391,13 +442,18 @@ static GPU_OUTPUT* vp9_opencl_execute(VP9_COMP *cpi,
                                   0, NULL, NULL);
   assert(status == CL_SUCCESS);
 
-  local_size[1]  >>= pixel_rows_per_workitem_log2[gpu_bsize];
-  global_size[1] >>= pixel_rows_per_workitem_log2[gpu_bsize];
+  local_size_inter_pred[0] = local_size[0];
+  local_size_inter_pred[1] =
+      local_size[1] >> pixel_rows_per_workitem_log2_inter_pred[gpu_bsize];
+
+  global_size[0] = num_block_cols * local_size_inter_pred[0];
+  global_size[1] = num_block_rows * local_size_inter_pred[1];
+
   status = clEnqueueNDRangeKernel(opencl->cmd_queue,
                                   opencl->vp9_pick_inter_mode_part3[gpu_bsize],
                                   2,
                                   NULL,
-                                  global_size, local_size,
+                                  global_size, local_size_inter_pred,
                                   0, NULL, NULL);
   assert(status == CL_SUCCESS);
 
@@ -428,6 +484,9 @@ static void vp9_opencl_remove(VP9_COMP *cpi) {
   cl_int status;
 
   for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+    status = clReleaseKernel(opencl->vp9_pick_inter_mode_part0[gpu_bsize]);
+    if (status != CL_SUCCESS)
+      goto fail;
     status = clReleaseKernel(opencl->vp9_pick_inter_mode_part1[gpu_bsize]);
     if (status != CL_SUCCESS)
       goto fail;
@@ -469,6 +528,11 @@ int vp9_opencl_init(VP9_GPU *gpu) {
   const char *kernel_file_name= PREFIX_PATH"vp9_pick_inter_mode.cl";
 
   // TODO(karthick-ittiam) : Fix this hardcoding
+  const char *build_options_full_pixel_search[GPU_BLOCK_SIZES] = {
+      "-DBLOCK_SIZE_IN_PIXELS=32 -DPIXEL_ROWS_PER_WORKITEM=32",
+      "-DBLOCK_SIZE_IN_PIXELS=16 -DPIXEL_ROWS_PER_WORKITEM=8",
+      "-DBLOCK_SIZE_IN_PIXELS=8 -DPIXEL_ROWS_PER_WORKITEM=8" };
+
   const char *build_options[GPU_BLOCK_SIZES] = {
       "-DBLOCK_SIZE_IN_PIXELS=32 -DPIXEL_ROWS_PER_WORKITEM=8",
       "-DBLOCK_SIZE_IN_PIXELS=16 -DPIXEL_ROWS_PER_WORKITEM=4",
@@ -516,6 +580,59 @@ int vp9_opencl_init(VP9_GPU *gpu) {
                                            &status);
   if (status != CL_SUCCESS || opencl->cmd_queue == NULL)
     goto fail;
+
+  for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+    // Read kernel source files
+    kernel_src = read_src(kernel_file_name);
+    if (kernel_src == NULL)
+      goto fail;
+
+    program = clCreateProgramWithSource(opencl->context, 1,
+                                        (const char**)(void *)&kernel_src,
+                                        NULL,
+                                        &status);
+    vpx_free(kernel_src);
+    if (status != CL_SUCCESS)
+      goto fail;
+
+
+    // Build the program
+    status = clBuildProgram(program, 1, &device, build_options_full_pixel_search[gpu_bsize],
+                            NULL, NULL);
+    if (status != CL_SUCCESS) {
+    // Enable this if you are a OpenCL developer and need to print the build
+    // errors of the OpenCL kernel
+#if OPENCL_DEVELOPER_MODE
+      uint8_t *build_log;
+      size_t build_log_size;
+
+      clGetProgramBuildInfo(program,
+          device,
+          CL_PROGRAM_BUILD_LOG,
+          0,
+          NULL,
+          &build_log_size);
+      build_log = (uint8_t*)vpx_malloc(build_log_size);
+      if (build_log == NULL)
+        goto fail;
+
+      clGetProgramBuildInfo(program,
+          device,
+          CL_PROGRAM_BUILD_LOG,
+          build_log_size,
+          build_log,
+          NULL);
+      build_log[build_log_size-1] = '\0';
+      fprintf(stderr, "Build Log:\n%s\n", build_log);
+      vpx_free(build_log);
+#endif
+      goto fail;
+    }
+    opencl->vp9_pick_inter_mode_part0[gpu_bsize] = clCreateKernel(
+        program, "vp9_pick_inter_mode_part0", &status);
+    if (status != CL_SUCCESS)
+      goto fail;
+  }
 
   for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
     // Read kernel source files
