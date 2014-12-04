@@ -258,6 +258,23 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
 
   }
 
+  status  = clSetKernelArg(opencl->vp9_is_8x8_required, 0,
+                           sizeof(cl_mem), &opencl->input_mv[GPU_BLOCK_32X32]);
+  status |= clSetKernelArg(opencl->vp9_is_8x8_required, 1,
+                           sizeof(cl_mem), &opencl->output_rd[GPU_BLOCK_32X32]);
+  status |= clSetKernelArg(opencl->vp9_is_8x8_required, 2,
+                           sizeof(cl_mem), &opencl->input_mv[GPU_BLOCK_16X16]);
+  status |= clSetKernelArg(opencl->vp9_is_8x8_required, 3,
+                           sizeof(cl_mem), &opencl->output_rd[GPU_BLOCK_16X16]);
+  status |= clSetKernelArg(opencl->vp9_is_8x8_required, 4,
+                           sizeof(cl_mem), &opencl->input_mv[GPU_BLOCK_8X8]);
+  status |= clSetKernelArg(opencl->vp9_is_8x8_required, 5,
+                           sizeof(cl_mem), &opencl->output_rd[GPU_BLOCK_8X8]);
+  status |= clSetKernelArg(opencl->vp9_is_8x8_required, 6,
+                           sizeof(cl_mem), &opencl->rd_parameters);
+  if (status != CL_SUCCESS)
+    goto fail;
+
   return;
 fail:
   // TODO(karthick-ittiam): The error set below is ignored by the encoder. This
@@ -403,6 +420,22 @@ static GPU_OUTPUT* vp9_opencl_execute(VP9_COMP *cpi,
     opencl->rd_parameters_mapped = NULL;
   }
 
+  if (gpu_bsize == GPU_BLOCK_8X8) {
+    const int log2_of_32 = b_width_log2(BLOCK_32X32) + 2;
+    int num_32x32_cols = cm->width >> log2_of_32;
+    int num_32x32_rows = cm->height >> log2_of_32;
+    global_size[0] = num_32x32_cols;
+    global_size[1] = num_32x32_rows;
+
+    status = clEnqueueNDRangeKernel(opencl->cmd_queue,
+                                    opencl->vp9_is_8x8_required,
+                                    2,
+                                    NULL,
+                                    global_size, NULL,
+                                    0, NULL, NULL);
+    assert(status == CL_SUCCESS);
+  }
+
   local_size_full_pixel_search[0] = local_size[0];
   local_size_full_pixel_search[1] =
       local_size[1] >> pixel_rows_per_workitem_log2_full_pixel_search[gpu_bsize];
@@ -500,6 +533,10 @@ static void vp9_opencl_remove(VP9_COMP *cpi) {
     if (status != CL_SUCCESS)
       goto fail;
   }
+
+  status = clReleaseKernel(opencl->vp9_is_8x8_required);
+  if (status != CL_SUCCESS)
+    goto fail;
 
   status = clReleaseCommandQueue(opencl->cmd_queue);
   if (status != CL_SUCCESS)
@@ -701,6 +738,11 @@ int vp9_opencl_init(VP9_GPU *gpu) {
     if (status != CL_SUCCESS)
       goto fail;
   }
+
+  opencl->vp9_is_8x8_required = clCreateKernel(
+      program, "vp9_is_8x8_required", &status);
+  if (status != CL_SUCCESS)
+    goto fail;
 
   return 0;
 fail:

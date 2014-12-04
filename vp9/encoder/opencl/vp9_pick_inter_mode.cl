@@ -350,14 +350,14 @@ typedef enum {
     sum.s0    = sum.s0    + sum.s1;                                     \
     barrier(CLK_LOCAL_MEM_FENCE);                                       \
     intermediate_int[(local_row * LOCAL_STRIDE) + local_col] = sum.s0;  \
-    ACCUMULATE_MULTI_ROW(BLOCK_SIZE_IN_PIXELS, intermediate_int)       \
+    ACCUMULATE_MULTI_ROW(BLOCK_SIZE_IN_PIXELS, intermediate_int)        \
     barrier(CLK_LOCAL_MEM_FENCE);                                       \
     *psum = intermediate_int[0];                                        \
     sse.s01   = sse.s01   + sse.s23;                                    \
     sse.s0    = sse.s0    + sse.s1;                                     \
     barrier(CLK_LOCAL_MEM_FENCE);                                       \
     intermediate_int[(local_row * LOCAL_STRIDE) + local_col] = sse.s0;  \
-    ACCUMULATE_MULTI_ROW(BLOCK_SIZE_IN_PIXELS, intermediate_int)       \
+    ACCUMULATE_MULTI_ROW(BLOCK_SIZE_IN_PIXELS, intermediate_int)        \
     barrier(CLK_LOCAL_MEM_FENCE);                                       \
     *psse = intermediate_int[0];
 
@@ -2302,3 +2302,66 @@ exit:
   return;
 }
 
+__kernel
+void vp9_is_8x8_required(
+    __global GPU_INPUT  *mv_32x32,
+    __global GPU_OUTPUT *rd_32x32,
+    __global GPU_INPUT  *mv_16x16,
+    __global GPU_OUTPUT *rd_16x16,
+    __global GPU_INPUT  *mv_8x8,
+    __global GPU_OUTPUT *rd_8x8,
+    __global GPU_RD_PARAMETERS *rd_parameters)
+{
+  int global_col = get_global_id(0);
+  int global_row = get_global_id(1);
+  int global_stride = get_global_size(0);
+
+  mv_32x32 += global_row * global_stride + global_col;
+  rd_32x32 += global_row * global_stride + global_col;
+
+  global_row *= 2;
+  global_col *= 2;
+  global_stride *= 2;
+  mv_16x16 += global_row * global_stride + global_col;
+  rd_16x16 += global_row * global_stride + global_col;
+  if(mv_32x32->do_compute == 0 || mv_16x16->do_compute == 0)
+    return;
+
+
+  int total_rate_16x16 = rd_16x16[0].returnrate +
+                         rd_16x16[1].returnrate +
+                         rd_16x16[global_stride].returnrate +
+                         rd_16x16[global_stride + 1].returnrate;
+  int64_t total_dist_16x16 = rd_16x16[0].returndistortion +
+                             rd_16x16[1].returndistortion +
+                             rd_16x16[global_stride].returndistortion +
+                             rd_16x16[global_stride + 1].returndistortion;
+
+
+  int64_t total_rd_16x16 = RDCOST(rd_parameters->rd_mult, rd_parameters->rd_div,
+                          total_rate_16x16, total_dist_16x16);
+
+  int64_t total_rd_16x16_minus_12_point_5_percent = total_rd_16x16 -
+      (total_rd_16x16 / 8);
+
+  if(rd_32x32[0].best_rd < total_rd_16x16_minus_12_point_5_percent)
+  {
+    global_row *= 2;
+    global_col *= 2;
+    global_stride *= 2;
+    rd_8x8 += global_row * global_stride + global_col;
+    mv_8x8 += global_row * global_stride + global_col;
+    int i;
+    for(i = 0; i < 4; i++)
+    {
+      int j;
+      for(j = 0; j < 4; j++)
+      {
+        mv_8x8[j].do_compute = 0;
+        rd_8x8[j].best_rd = INT64_MAX;
+      }
+      mv_8x8 += global_stride;
+      rd_8x8 += global_stride;
+    }
+  }
+}

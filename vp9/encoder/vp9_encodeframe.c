@@ -2818,7 +2818,8 @@ static void nonrd_pick_partition(VP9_COMP *cpi, MACROBLOCK *const x,
 
     if (this_rate != INT_MAX) {
       int pl = partition_plane_context(xd, mi_row, mi_col, bsize);
-      this_rate += cpi->partition_cost[pl][PARTITION_NONE];
+      if(!x->data_parallel_processing)
+        this_rate += cpi->partition_cost[pl][PARTITION_NONE];
       sum_rd = RDCOST(x->rdmult, x->rddiv, this_rate, this_dist);
       if (sum_rd < best_rd) {
         int64_t stop_thresh = 4096;
@@ -3209,9 +3210,7 @@ static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
 {
   SPEED_FEATURES *const sf = &cpi->sf;
   VP9_COMMON *const cm = &cpi->common;
-#if !CONFIG_GPU_COMPUTE
   MACROBLOCKD *const xd = &x->e_mbd;
-#endif
   GPU_BLOCK_SIZE i;
   int h, j, k;
   const int num_32x32_in_64x64 = 4;
@@ -3272,7 +3271,8 @@ static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
           const int force_vert_split = (actual_mi_col + ms >= cm->mi_cols);
 
           if (force_horz_split || force_vert_split) {
-            vp9_zero(pc_tree->none.pred_mv);
+            vpx_memcpy(pc_tree->none.pred_mv, pc_parent->none.pred_mv,
+                       sizeof(pc_parent->none.pred_mv));
             is_gpu_block = 0;
             continue;
           }
@@ -3280,26 +3280,22 @@ static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
               actual_mi_row >= tile->mi_row_end)
             continue;
 
-#if !CONFIG_GPU_COMPUTE // Disabled temporarily for OpenCL development. Will be enabled back soon.
           // Let us try to avoid 8x8's MV computations if 32x32 is winning
           // already
           if (bsize == BLOCK_8X8 && is_gpu_block) {
             // If the 32x32's RD cost is 12.5% lesser than 16x16's RD cost,
             // then skip computations for 8x8
-            if (rdcost[GPU_BLOCK_32X32] < (rdcost[GPU_BLOCK_16X16] * 7) / 8) {
+            int64_t rdcost_minus_12_point_5_percent = rdcost[GPU_BLOCK_16X16] -
+                (rdcost[GPU_BLOCK_16X16] / 8);
+            if (rdcost[GPU_BLOCK_32X32] < rdcost_minus_12_point_5_percent) {
               vp9_gpu_set_mvinfo_offsets(cm, xd,
                                          actual_mi_row, actual_mi_col,
                                          BLOCK_8X8);
               xd->gpu_mvinfo[BLOCK_8X8]->best_rd = INT64_MAX;
-              xd->gpu_mvinfo[BLOCK_8X8]->returnrate = INT32_MAX;
-              xd->gpu_mvinfo[BLOCK_8X8]->returndistortion = INT64_MAX;
               continue;
             }
           }
-#else
-          (void)rdcost[i];
-          (void)is_gpu_block;
-#endif
+
           load_pred_mv(x, &pc_parent->none);
           nonrd_pick_partition(cpi, x, tile, tp, actual_mi_row,
                                actual_mi_col, bsize, &rate, &dist, 0,
