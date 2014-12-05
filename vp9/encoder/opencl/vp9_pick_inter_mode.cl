@@ -297,17 +297,19 @@ typedef enum {
     calculate_fullpel_variance(ref_frame, cur_frame, stride,           \
                       &sse, &sum, &best_mv);                           \
                                                                        \
+   if(BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM) {                                    \
     barrier(CLK_LOCAL_MEM_FENCE);                                      \
     intermediate_sum[local_row * LOCAL_STRIDE + local_col] = sum;      \
-    ACCUMULATE(BLOCK_SIZE_IN_PIXELS,intermediate_sum);                 \
+    ACCUMULATE_MULTI_ROW(BLOCK_SIZE_IN_PIXELS,intermediate_sum);       \
     barrier(CLK_LOCAL_MEM_FENCE);                                      \
     sum = intermediate_sum[0];                                         \
                                                                        \
     barrier(CLK_LOCAL_MEM_FENCE);                                      \
     intermediate_sse[local_row * LOCAL_STRIDE + local_col] = sse;      \
-    ACCUMULATE(BLOCK_SIZE_IN_PIXELS,intermediate_sse);                 \
+    ACCUMULATE_MULTI_ROW(BLOCK_SIZE_IN_PIXELS,intermediate_sse);       \
     barrier(CLK_LOCAL_MEM_FENCE);                                      \
     sse = intermediate_sse[0];                                         \
+   }                                                                   \
                                                                        \
     besterr = sse - (((long int)sum * sum)                             \
                       / (BLOCK_SIZE_IN_PIXELS * BLOCK_SIZE_IN_PIXELS));\
@@ -466,23 +468,23 @@ __constant MV hex_candidates[MAX_PATTERN_SCALES][MAX_PATTERN_CANDIDATES] = {
     {{-1, -2}, {1, -2}, {2, 0}, {1, 2}, { -1, 2}, { -2, 0}},
   };
 
-__constant int8 vp9_bilinear_filters[16] = {
-  { 0, 0, 0, 128,   0, 0, 0, 0 },
-  { 0, 0, 0, 120,   8, 0, 0, 0 },
-  { 0, 0, 0, 112,  16, 0, 0, 0 },
-  { 0, 0, 0, 104,  24, 0, 0, 0 },
-  { 0, 0, 0,  96,  32, 0, 0, 0 },
-  { 0, 0, 0,  88,  40, 0, 0, 0 },
-  { 0, 0, 0,  80,  48, 0, 0, 0 },
-  { 0, 0, 0,  72,  56, 0, 0, 0 },
-  { 0, 0, 0,  64,  64, 0, 0, 0 },
-  { 0, 0, 0,  56,  72, 0, 0, 0 },
-  { 0, 0, 0,  48,  80, 0, 0, 0 },
-  { 0, 0, 0,  40,  88, 0, 0, 0 },
-  { 0, 0, 0,  32,  96, 0, 0, 0 },
-  { 0, 0, 0,  24, 104, 0, 0, 0 },
-  { 0, 0, 0,  16, 112, 0, 0, 0 },
-  { 0, 0, 0,   8, 120, 0, 0, 0 }
+__constant ushort2 vp9_bilinear_filters[16] = {
+  {128,   0},
+  {120,   8},
+  {112,  16},
+  {104,  24},
+  { 96,  32},
+  { 88,  40},
+  { 80,  48},
+  { 72,  56},
+  { 64,  64},
+  { 56,  72},
+  { 48,  80},
+  { 40,  88},
+  { 32,  96},
+  { 24, 104},
+  { 16, 112},
+  {  8, 120}
 };
 
 
@@ -792,10 +794,10 @@ ushort calculate_sad(MV *currentmv,
                     int stride)
 {
   uchar8 ref,cur;
-  ushort8 sad = (0, 0, 0, 0, 0, 0, 0, 0);
+  ushort8 sad = 0;
   int buffer_offset;
   __global uchar *tmp_ref, *tmp_cur;
-  int row, col;
+  int row;
 
   buffer_offset = (currentmv->row * stride) + currentmv->col;
 
@@ -817,35 +819,6 @@ ushort calculate_sad(MV *currentmv,
   return (final_sad.s0 + final_sad.s1);
 }
 
-void get_sum_sse(uchar8 ref, uchar8 cur, unsigned int *psse, int *psum)
-{
-  short8 diff = convert_short8(ref) - convert_short8(cur);
-  short sum;
-  sum  = diff.s0;
-  sum += diff.s1;
-  sum += diff.s2;
-  sum += diff.s3;
-  sum += diff.s4;
-  sum += diff.s5;
-  sum += diff.s6;
-  sum += diff.s7;
-  *psum = sum;
-
-  uint8 diff_squared = convert_uint8(convert_int8(diff) * convert_int8(diff));
-  uint sse;
-  sse  = diff_squared.s0;
-  sse += diff_squared.s1;
-  sse += diff_squared.s2;
-  sse += diff_squared.s3;
-  sse += diff_squared.s4;
-  sse += diff_squared.s5;
-  sse += diff_squared.s6;
-  sse += diff_squared.s7;
-  *psse = sse;
-
-  return;
-}
-
 void calculate_fullpel_variance(__global uchar *ref_frame,
                                 __global uchar *cur_frame,
                                 int stride,
@@ -856,7 +829,10 @@ void calculate_fullpel_variance(__global uchar *ref_frame,
   int buffer_offset;
   __global uchar *tmp_ref,*tmp_cur;
 
-  int sad,diff;
+  short8 diff;
+  short8 vsum = 0;
+  uint4 vsse = 0;
+  int row;
   buffer_offset = ((submv->row >> 3) * stride) + (submv->col >> 3);
   *sum = 0;
   *sse = 0;
@@ -864,65 +840,231 @@ void calculate_fullpel_variance(__global uchar *ref_frame,
   tmp_ref = ref_frame + buffer_offset;
   tmp_cur = cur_frame;
 
-  ref = vload8(0,tmp_ref);
-  cur = vload8(0,tmp_cur);
+  for(row = 0; row < PIXEL_ROWS_PER_WORKITEM; row++) {
+    ref = vload8(0,tmp_ref);
+    cur = vload8(0,tmp_cur);
 
-  get_sum_sse(ref, cur, sse, sum);
+    diff = convert_short8(ref) - convert_short8(cur);
+    vsum += diff;
+    vsse += convert_uint4(convert_int4(diff.s0123) * convert_int4(diff.s0123));
+    vsse += convert_uint4(convert_int4(diff.s4567) * convert_int4(diff.s4567));
+
+    tmp_ref += stride;
+    tmp_cur += stride;
+  }
+  vsum.s0123 = vsum.s0123 + vsum.s4567;
+  vsum.s01 = vsum.s01 + vsum.s23;
+  *sum = vsum.s0 + vsum.s1;
+
+  vsse.s01 = vsse.s01 + vsse.s23;
+  *sse = vsse.s0 + vsse.s1;
+
 }
 
 void var_filter_block2d_bil_first_pass_gpu(__global uchar *ref_data,
-                                           __local uint16_t *fdata3,
+#if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
+                                           __local uchar *fdata3,
+#else
+                                           uchar *fdata3,
+#endif
                                            int stride,
-                                           int8 vp9_filter) {
-   __local ushort8 *output;
+                                           ushort2 vp9_filter) {
+
+#if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
   int local_col  = get_local_id(0);
   int local_row  = get_local_id(1);
+#else
+  int local_col = 0;
+  int local_row = 0;
+#endif
+
   uchar8 src_0;
   uchar8 src_1;
+  int row;
+  uchar8 out;
+  ushort8 round_factor = 1 << (FILTER_BITS - 1);
+  ushort8 filter_shift = FILTER_BITS;
 
-  output  = (__local ushort8 *)(fdata3 + local_row * BLOCK_SIZE_IN_PIXELS +
+  fdata3  += (local_row * BLOCK_SIZE_IN_PIXELS * PIXEL_ROWS_PER_WORKITEM +
                                          local_col * NUM_PIXELS_PER_WORKITEM);
-  src_0 = vload8(0, ref_data);
-  src_1 = vload8(0, ref_data + 1);
+#if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
   barrier(CLK_LOCAL_MEM_FENCE);
-  *output =
-      convert_ushort8(ROUND_POWER_OF_TWO(convert_int8(src_0) * vp9_filter.s3 +
-                         convert_int8(src_1) * vp9_filter.s4,  FILTER_BITS));
+#endif
 
-  if (local_row == (LOCAL_HEIGHT - 1)) {
-
-    output   = (__local ushort8 *)(fdata3 + (local_row + 1) *
-                BLOCK_SIZE_IN_PIXELS + local_col * NUM_PIXELS_PER_WORKITEM);
-    ref_data += stride;
+  for(row = 0; row < PIXEL_ROWS_PER_WORKITEM; row++) {
     src_0 = vload8(0, ref_data);
     src_1 = vload8(0, ref_data + 1);
-    *output =
-        convert_ushort8(ROUND_POWER_OF_TWO(convert_int8(src_0) * vp9_filter.s3 +
-                            convert_int8(src_1) * vp9_filter.s4,  FILTER_BITS));
+
+    out = convert_uchar8((convert_ushort8(src_0) * vp9_filter.s0 +
+        convert_ushort8(src_1) * vp9_filter.s1 + round_factor) >> filter_shift);
+
+    vstore8(out, 0, fdata3);
+
+    ref_data += stride;
+    fdata3   += BLOCK_SIZE_IN_PIXELS;
+  }
+
+  if (local_row == ((BLOCK_SIZE_IN_PIXELS / PIXEL_ROWS_PER_WORKITEM) - 1)) {
+    src_0 = vload8(0, ref_data);
+    src_1 = vload8(0, ref_data + 1);
+    out = convert_uchar8((convert_ushort8(src_0) * vp9_filter.s0 +
+        convert_ushort8(src_1) * vp9_filter.s1 + round_factor) >> filter_shift);
+    vstore8(out, 0, fdata3);
   }
 }
 
-uchar8 var_filter_block2d_bil_second_pass_gpu(__local uint16_t *fdata3,
-                                             int8 vp9_filter) {
-
+void var_filter_block2d_bil_second_pass_gpu(
+#if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
+                                            __local uchar *fdata3,
+#else
+                                            uchar *fdata3,
+#endif
+                                            ushort2 vp9_filter,
+                                            __global uchar *cur_frame,
+                                            unsigned int *sse,
+                                            int *sum,
+                                            int stride) {
+#if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
   int local_col  = get_local_id(0);
   int local_row  = get_local_id(1);
+#else
+  int local_row = 0;
+  int local_col = 0;
+#endif
 
   uchar8 output;
-  __local ushort8 *ref_data;
-  ushort8 src_0;
-  ushort8 src_1;
+  uchar8 src_0;
+  uchar8 src_1;
+  ushort8 round_factor = 1 << (FILTER_BITS - 1);
+  ushort8 filter_shift = FILTER_BITS;
+  short8 diff;
+  short8 vsum = 0;
+  uint4 vsse = 0;
+  int row;
 
-  ref_data  = (__local ushort8 *)(fdata3 + local_row * BLOCK_SIZE_IN_PIXELS
+  fdata3  += (local_row * BLOCK_SIZE_IN_PIXELS * PIXEL_ROWS_PER_WORKITEM
                                       + local_col * NUM_PIXELS_PER_WORKITEM);
-  barrier(CLK_LOCAL_MEM_FENCE);
-  src_0 = ref_data[0];
-  src_1 = ref_data[BLOCK_SIZE_IN_PIXELS / NUM_PIXELS_PER_WORKITEM];
-  output =
-      convert_uchar8(ROUND_POWER_OF_TWO(convert_int8(src_0) * vp9_filter.s3 +
-                         convert_int8(src_1) * vp9_filter.s4,  FILTER_BITS));
 
-  return output;
+#if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
+  barrier(CLK_LOCAL_MEM_FENCE);
+#endif
+  for(row = 0; row < PIXEL_ROWS_PER_WORKITEM; row++) {
+
+    src_0 = vload8(0, fdata3);
+    src_1 = vload8((BLOCK_SIZE_IN_PIXELS / NUM_PIXELS_PER_WORKITEM), fdata3);
+    output = convert_uchar8((convert_ushort8(src_0) * vp9_filter.s0 +
+        convert_ushort8(src_1) * vp9_filter.s1 + round_factor) >> filter_shift);
+
+    uchar8 cur = vload8(0, cur_frame);
+
+    diff = convert_short8(output) - convert_short8(cur);
+    vsum += diff;
+    vsse += convert_uint4(convert_int4(diff.s0123) * convert_int4(diff.s0123));
+    vsse += convert_uint4(convert_int4(diff.s4567) * convert_int4(diff.s4567));
+
+    cur_frame += stride;
+    fdata3  += BLOCK_SIZE_IN_PIXELS;
+
+  }
+  vsum.s0123 = vsum.s0123 + vsum.s4567;
+  vsum.s01 = vsum.s01 + vsum.s23;
+  *sum = vsum.s0 + vsum.s1;
+
+  vsse.s01 = vsse.s01 + vsse.s23;
+  *sse = vsse.s0 + vsse.s1;
+
+  return;
+}
+
+void var_filter_block2d_bil_horizontal(__global uchar *ref_frame,
+                                       ushort2 vp9_filter,
+                                       __global uchar *cur_frame,
+                                       unsigned int *sse,
+                                       int *sum,
+                                       int stride) {
+  uchar8 output;
+  uchar8 src_0;
+  uchar8 src_1;
+  ushort8 round_factor = 1 << (FILTER_BITS - 1);
+  ushort8 filter_shift = FILTER_BITS;
+  short8 diff;
+  short8 vsum = 0;
+  uint4 vsse = 0;
+  int row;
+
+  for(row = 0; row < PIXEL_ROWS_PER_WORKITEM; row++) {
+
+    src_0 = vload8(0, ref_frame);
+    src_1 = vload8(0, ref_frame + 1);
+    output = convert_uchar8((convert_ushort8(src_0) * vp9_filter.s0 +
+        convert_ushort8(src_1) * vp9_filter.s1 + round_factor) >> filter_shift);
+
+    uchar8 cur = vload8(0, cur_frame);
+
+    diff = convert_short8(output) - convert_short8(cur);
+    vsum += diff;
+    vsse += convert_uint4(convert_int4(diff.s0123) * convert_int4(diff.s0123));
+    vsse += convert_uint4(convert_int4(diff.s4567) * convert_int4(diff.s4567));
+
+    cur_frame += stride;
+    ref_frame += stride;
+
+  }
+  vsum.s0123 = vsum.s0123 + vsum.s4567;
+  vsum.s01 = vsum.s01 + vsum.s23;
+  *sum = vsum.s0 + vsum.s1;
+
+  vsse.s01 = vsse.s01 + vsse.s23;
+  *sse = vsse.s0 + vsse.s1;
+
+  return;
+}
+
+
+void var_filter_block2d_bil_vertical(__global uchar *ref_frame,
+                                     ushort2 vp9_filter,
+                                     __global uchar *cur_frame,
+                                     unsigned int *sse,
+                                     int *sum,
+                                     int stride) {
+
+  uchar8 output;
+  uchar8 src_0;
+  uchar8 src_1;
+  ushort8 round_factor = 1 << (FILTER_BITS - 1);
+  ushort8 filter_shift = FILTER_BITS;
+  short8 diff;
+  short8 vsum = 0;
+  uint4 vsse = 0;
+  int row;
+  int stride_by_8 = stride / 8;
+
+  for(row = 0; row < PIXEL_ROWS_PER_WORKITEM; row++) {
+
+    src_0 = vload8(0, ref_frame);
+    src_1 = vload8(stride_by_8, ref_frame);
+    output = convert_uchar8((convert_ushort8(src_0) * vp9_filter.s0 +
+        convert_ushort8(src_1) * vp9_filter.s1 + round_factor) >> filter_shift);
+
+    uchar8 cur = vload8(0, cur_frame);
+
+    diff = convert_short8(output) - convert_short8(cur);
+    vsum += diff;
+    vsse += convert_uint4(convert_int4(diff.s0123) * convert_int4(diff.s0123));
+    vsse += convert_uint4(convert_int4(diff.s4567) * convert_int4(diff.s4567));
+
+    cur_frame += stride;
+    ref_frame += stride;
+
+  }
+  vsum.s0123 = vsum.s0123 + vsum.s4567;
+  vsum.s01 = vsum.s01 + vsum.s23;
+  *sum = vsum.s0 + vsum.s1;
+
+  vsse.s01 = vsse.s01 + vsse.s23;
+  *sse = vsse.s0 + vsse.s1;
+
+  return;
 }
 
 void calculate_subpel_variance(__global uchar *ref_frame,
@@ -934,37 +1076,41 @@ void calculate_subpel_variance(__global uchar *ref_frame,
                                int col,
                                unsigned int *sse,
                                int *sum,
-                               __local uint16_t *fdata3) {
-  uchar8 ref,cur,temp2;
-  int buffer_offset, diff;
+#if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
+                                __local uchar *fdata3) {
+#else
+                                uchar *fdata3) {
+#endif
+  int buffer_offset;
   __global uchar *tmp_ref,*tmp_cur;
 
-  int i,j,h;
-  int local_col  = get_local_id(0);
-  int local_row  = get_local_id(1);
-
-  int group_col = get_group_id(0);
-  int group_row = get_group_id(1);
-
-  int global_col = get_global_id(0);
-  int global_row = get_global_id(1);
-
   buffer_offset = ((row >> 3) * stride) + (col >> 3);
-  *sum = 0;
-  *sse = 0;
-  diff = 0;
 
   tmp_ref = ref_frame + buffer_offset;
   tmp_cur = cur_frame;
 
-  var_filter_block2d_bil_first_pass_gpu(tmp_ref, fdata3, stride,
-                                        BILINEAR_FILTERS_2TAP(xoffset));
-  temp2 = var_filter_block2d_bil_second_pass_gpu(fdata3,
-                                        BILINEAR_FILTERS_2TAP(yoffset));
+// Enabling this piece of code causes a crash in Intel HD graphics. But it works
+// fine in Mali GPU and AMD GPU. Must be an issue with Intel's driver
+#if !INTEL_HD_GRAPHICS
+  if(!yoffset) {
+    var_filter_block2d_bil_horizontal(tmp_ref,
+                                      BILINEAR_FILTERS_2TAP(xoffset),
+                                      tmp_cur, sse, sum, stride);
+  } else if(!xoffset) {
+    var_filter_block2d_bil_vertical(tmp_ref,
+                                    BILINEAR_FILTERS_2TAP(yoffset),
+                                    tmp_cur, sse, sum, stride);
 
-  cur   = vload8(0,tmp_cur);
+  } else
+#endif
+  {
+    var_filter_block2d_bil_first_pass_gpu(tmp_ref, fdata3, stride,
+                                          BILINEAR_FILTERS_2TAP(xoffset));
 
-  get_sum_sse(temp2, cur, sse, sum);
+    var_filter_block2d_bil_second_pass_gpu(fdata3,
+                                           BILINEAR_FILTERS_2TAP(yoffset),
+                                           tmp_cur, sse, sum, stride);
+  }
 }
 
 inline int get_sad(__global uchar *ref_frame, __global uchar *cur_frame,
@@ -978,7 +1124,7 @@ inline int get_sad(__global uchar *ref_frame, __global uchar *cur_frame,
   intermediate_sad[local_row * LOCAL_STRIDE + local_col] =
       calculate_sad(&this_mv, ref_frame, cur_frame, stride);
 
-  ACCUMULATE(BLOCK_SIZE_IN_PIXELS,intermediate_sad)
+  ACCUMULATE_MULTI_ROW(BLOCK_SIZE_IN_PIXELS,intermediate_sad)
 
   barrier(CLK_LOCAL_MEM_FENCE);
   return intermediate_sad[0];
@@ -1132,39 +1278,48 @@ MV check_better_subpel(__global uchar *ref_frame,
                             MV maxmv,
                             unsigned int *pbesterr,
                             int error_per_bit,
-                            __local ushort *fdata3) {
-__local int *intermediate_sum = (__local int *)fdata3;
-__local uint *intermediate_sse = (__local uint *)fdata3;
+#if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
+                            __local uchar *fdata3) {
+
+  __local int *intermediate_sum = (__local int *)fdata3;
+  __local uint *intermediate_sse = (__local uint *)fdata3;
+#else
+                            uchar *fdata3) {
+#endif
+
   int sum, thismse;
   unsigned int sse;
   int distortion;
 
+#if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
   int local_col  = get_local_id(0);
   int local_row  = get_local_id(1);
-
-  int global_col = get_global_id(0);
-  int global_row = get_global_id(1);
-
+#else
+  int local_col  = 0;
+  int local_row  = 0;
+#endif
 
   if (c >= minmv.col && c <= maxmv.col && r >= minmv.row && r <= maxmv.row) {
-  calculate_subpel_variance(ref_frame, cur_frame, stride,
+    calculate_subpel_variance(ref_frame, cur_frame, stride,
        sp(c), sp(r), r, c, &sse, &sum, fdata3);
 
-  barrier(CLK_LOCAL_MEM_FENCE);
-  intermediate_sum[local_row * LOCAL_STRIDE + local_col] = sum;
+#if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
+    barrier(CLK_LOCAL_MEM_FENCE);
+    intermediate_sum[local_row * LOCAL_STRIDE + local_col] = sum;
 
-  ACCUMULATE(BLOCK_SIZE_IN_PIXELS,intermediate_sum);
-  barrier(CLK_LOCAL_MEM_FENCE);
-  sum = intermediate_sum[0];
+    ACCUMULATE_MULTI_ROW(BLOCK_SIZE_IN_PIXELS,intermediate_sum);
+    barrier(CLK_LOCAL_MEM_FENCE);
+    sum = intermediate_sum[0];
 
-  barrier(CLK_LOCAL_MEM_FENCE);
-  intermediate_sse[local_row * LOCAL_STRIDE + local_col] = sse;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    intermediate_sse[local_row * LOCAL_STRIDE + local_col] = sse;
 
-  ACCUMULATE(BLOCK_SIZE_IN_PIXELS,intermediate_sse);
-  barrier(CLK_LOCAL_MEM_FENCE);
-  sse = intermediate_sse[0];
+    ACCUMULATE_MULTI_ROW(BLOCK_SIZE_IN_PIXELS,intermediate_sse);
+    barrier(CLK_LOCAL_MEM_FENCE);
+    sse = intermediate_sse[0];
+#endif
 
-  thismse = sse - (((long int)sum * sum)
+    thismse = sse - (((long int)sum * sum)
             / (BLOCK_SIZE_IN_PIXELS * BLOCK_SIZE_IN_PIXELS));
 
     if ((*v = MVC(*v, r, c) + thismse) < *pbesterr) {
@@ -1176,7 +1331,6 @@ __local uint *intermediate_sse = (__local uint *)fdata3;
   } else {
     *v = CL_INT_MAX;
   }
-
   return best_mv;
 }
 
@@ -1194,22 +1348,17 @@ MV first_level_checks(__global uchar *ref_frame,
                       MV maxmv,
                       unsigned int *pbesterr,
                       int error_per_bit,
-                      __local ushort *fdata3)  {
+#if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
+                      __local uchar *fdata3) {
+#else
+                      uchar *fdata3) {
+#endif
 
-__local int *intermediate_sum = (__local int *)fdata3;
-__local uint *intermediate_sse = (__local uint *)fdata3;
 
   unsigned int left, right, up, down, diag, whichdir;
   int distortion;
   int sum, thismse, tr, tc;
   unsigned int besterr, sse;
-
-  int local_col  = get_local_id(0);
-  int local_row  = get_local_id(1);
-
-  int global_col = get_global_id(0);
-  int global_row = get_global_id(1);
-
 
   tr = best_mv.row;
   tc = best_mv.col;
@@ -1288,21 +1437,28 @@ MV vp9_find_best_sub_pixel_tree(__global uchar *ref_frame,
                                 MV fcenter_mv,
                                 INIT *x,
                                 int error_per_bit,
-                                __local ushort *fdata3) {
+#if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
+                                __local uchar *fdata3) {
   __local int *intermediate_sum = (__local int *)fdata3;
   __local uint *intermediate_sse = (__local uint *)fdata3;
+#else
+                                uchar *fdata3) {
+  int *intermediate_sum = (int *)fdata3;
+  uint *intermediate_sse = (uint *)fdata3;
+#endif
+
+#if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
+  int local_col  = get_local_id(0);
+  int local_row  = get_local_id(1);
+#else
+  int local_col  = 0;
+  int local_row  = 0;
+#endif
 
   int sum, thismse;
   int hstep;
   unsigned int sse, besterr;
   MV minmv,maxmv;
-
-  int local_col  = get_local_id(0);
-  int local_row  = get_local_id(1);
-
-  int global_col = get_global_id(0);
-  int global_row = get_global_id(1);
-
 
   SETUP_SUBPEL_CHECKS
 
@@ -1335,17 +1491,13 @@ MV combined_motion_search(__global uchar *ref_frame,
                     int mi_cols,
                     __local int *intermediate_int
                     ) {
-  __local uint   *intermediate_sse = (__local uint*) intermediate_int;
   __global int   *nmvsadcost_0     = rd_parameters->nmvsadcost[0] + MV_MAX;
   __global int   *nmvsadcost_1     = rd_parameters->nmvsadcost[1] + MV_MAX;
-  __global int   *nmvcost_0        = rd_parameters->mvcost[0] + MV_MAX;
-  __global int   *nmvcost_1        = rd_parameters->mvcost[1] + MV_MAX;
-  __global int   *nmvjointcost     = rd_parameters->nmvjointcost;
 
   MV nearest_mv, near_mv;
-  MV this_mv, best_mv;
+  MV best_mv;
   MV fcenter_mv;
-  int i, mi_row, mi_col, sad_per_bit, error_per_bit;
+  int mi_row, mi_col, sad_per_bit;
   INIT x;
 
 #if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
@@ -1359,19 +1511,10 @@ MV combined_motion_search(__global uchar *ref_frame,
   int global_col = get_global_id(0);
   int global_row = get_global_id(1);
 
-  int group_col = get_group_id(0);
-  int group_row = get_group_id(1);
-
   sad_per_bit   = rd_parameters->sad_per_bit;
-  error_per_bit = rd_parameters->error_per_bit;
 
-#if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
-  mi_row = group_row * (BLOCK_SIZE_IN_PIXELS / NUM_PIXELS_PER_WORKITEM);
-  mi_col = group_col * (BLOCK_SIZE_IN_PIXELS / NUM_PIXELS_PER_WORKITEM);
-#else
-  mi_row = global_row;
+  mi_row = (global_row * PIXEL_ROWS_PER_WORKITEM) / MI_SIZE;
   mi_col = global_col;
-#endif
 
 #if BLOCK_SIZE_IN_PIXELS == 32
   mi_row = (mi_row >> 2) << 2;
@@ -1457,7 +1600,6 @@ inline void inter_prediction(__global uchar *ref_data,
     __global int *psum,
     __global uint *psse
 ) {
-  __global uchar8 *out_data_vec8;
   __local uchar8 *intermediate_uchar8;
   __local int *intermediate_int = (__local int *)intermediate;
   uchar8 curr_data = vload8(0, cur_frame);
@@ -1465,11 +1607,10 @@ inline void inter_prediction(__global uchar *ref_data,
   uchar16 ref;
   uchar8 ref_u8;
 
-  short8 inter, inter1;
+  short8 inter;
   int4 inter_out1;
   short8 sum = (short8)(0, 0, 0, 0, 0, 0, 0, 0);
   uint4 sse = (uint4)(0, 0, 0, 0);
-  int8 c_squared;
   short8 c;
 
   int local_col = get_local_id(0);
@@ -1748,10 +1889,11 @@ void vp9_pick_inter_mode_part0(__global uchar *ref_frame,
   __local uchar8 intermediate_uchar8[(BLOCK_SIZE_IN_PIXELS*(BLOCK_SIZE_IN_PIXELS + 7))/NUM_PIXELS_PER_WORKITEM];
   __local int *intermediate_int = (__local int *)intermediate_uchar8;
 #else
-  __local int *intermediate_int = NULL;
+  __local int *intermediate_int;
 #endif
   int global_col = get_global_id(0);
   int global_row = get_global_id(1);
+  int global_stride = get_global_size(0);
 
   int global_offset = ((global_row * PIXEL_ROWS_PER_WORKITEM) * stride) + (global_col * NUM_PIXELS_PER_WORKITEM);
 
@@ -1766,8 +1908,6 @@ void vp9_pick_inter_mode_part0(__global uchar *ref_frame,
   int local_col  = 0;
   int local_row  = 0;
 #endif
-
-  int global_stride = get_global_size(0);
 
   int mi_row, mi_col;
   MV best_mv,nearest_mv;
@@ -1794,13 +1934,8 @@ void vp9_pick_inter_mode_part0(__global uchar *ref_frame,
   if(!mv_input->do_compute)
     goto exit;
 
-#if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
-  mi_row = group_row * (BLOCK_SIZE_IN_PIXELS / NUM_PIXELS_PER_WORKITEM);
-  mi_col = group_col * (BLOCK_SIZE_IN_PIXELS / NUM_PIXELS_PER_WORKITEM);
-#else
-  mi_row = global_row;
+  mi_row = (global_row * PIXEL_ROWS_PER_WORKITEM) / MI_SIZE;
   mi_col = global_col;
-#endif
 
 #if BLOCK_SIZE_IN_PIXELS == 32
   mi_row = (mi_row >> 2) << 2;
@@ -1991,9 +2126,11 @@ exit:
 }
 
 __kernel
+#if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
 __attribute__((reqd_work_group_size(BLOCK_SIZE_IN_PIXELS / NUM_PIXELS_PER_WORKITEM,
-                                    BLOCK_SIZE_IN_PIXELS,
+                                    BLOCK_SIZE_IN_PIXELS / PIXEL_ROWS_PER_WORKITEM,
                                     1)))
+#endif
 void vp9_pick_inter_mode_part2(__global uchar *ref_frame,
     __global uchar *cur_frame,
     int stride,
@@ -2004,35 +2141,51 @@ void vp9_pick_inter_mode_part2(__global uchar *ref_frame,
     int mi_cols,
     __global GPU_OUTPUT *pred_mv
 ) {
-
-  __local ushort intermediate_ushort[(BLOCK_SIZE_IN_PIXELS + 1) * BLOCK_SIZE_IN_PIXELS];
+#if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
+  __local int intermediate_int[(BLOCK_SIZE_IN_PIXELS + 1) * BLOCK_SIZE_IN_PIXELS];
+  __local uchar *intermediate_ushort = (__local uchar *)intermediate_int;
+#else
+  int intermediate_int[(BLOCK_SIZE_IN_PIXELS + 1) * BLOCK_SIZE_IN_PIXELS];
+  uchar *intermediate_ushort = (uchar *)intermediate_int;
+#endif
 
   int global_col = get_global_id(0);
   int global_row = get_global_id(1);
-  int global_offset = (global_row * stride) + (global_col * NUM_PIXELS_PER_WORKITEM);
+  int global_stride = get_global_size(0);
 
   int group_col = get_group_id(0);
   int group_row = get_group_id(1);
   int group_stride = get_num_groups(0);
 
-  int local_col = get_local_id(0);
-  int local_row = get_local_id(1);
+#if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
+  int local_col  = get_local_id(0);
+  int local_row  = get_local_id(1);
+#else
+  int local_col  = 0;
+  int local_row  = 0;
+#endif
 
   int mi_row, mi_col;
 
-  global_offset += (VP9_ENC_BORDER_IN_PIXELS * stride) + VP9_ENC_BORDER_IN_PIXELS;
-  mv_input      += (group_row * group_stride + group_col);
+  int global_offset = ((global_row * PIXEL_ROWS_PER_WORKITEM) * stride) + (global_col * NUM_PIXELS_PER_WORKITEM);
 
+#if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
+  mv_input            += (group_row * group_stride + group_col);
   sse_variance_output += (group_row * group_stride + group_col);
+#else
+  mv_input            += (global_row * global_stride + global_col);
+  sse_variance_output += (global_row * global_stride + global_col);
+#endif
+
+  global_offset += (VP9_ENC_BORDER_IN_PIXELS * stride) + VP9_ENC_BORDER_IN_PIXELS;
 
   cur_frame += global_offset;
   ref_frame += global_offset;
 
-
   if(!mv_input->do_compute)
     goto exit;
 
-  mi_row = global_row / NUM_PIXELS_PER_WORKITEM;
+  mi_row = (global_row * PIXEL_ROWS_PER_WORKITEM) / MI_SIZE;
   mi_col = global_col;
 #if BLOCK_SIZE_IN_PIXELS == 32
   mi_row = (mi_row >> 2) << 2;
@@ -2129,7 +2282,7 @@ void vp9_pick_inter_mode_part3(__global uchar *ref_frame,
   if(!mv_input->do_newmv)
     goto exit;
 
-  mi_row = global_row / (MI_SIZE / PIXEL_ROWS_PER_WORKITEM);
+  mi_row = (global_row * PIXEL_ROWS_PER_WORKITEM) / MI_SIZE;
   mi_col = global_col;
 #if BLOCK_SIZE_IN_PIXELS == 32
   mi_row = (mi_row >> 2) << 2;
@@ -2358,6 +2511,7 @@ void vp9_is_8x8_required(
       for(j = 0; j < 4; j++)
       {
         mv_8x8[j].do_compute = 0;
+        rd_8x8[j].best_mode = ZEROMV;
         rd_8x8[j].best_rd = INT64_MAX;
       }
       mv_8x8 += global_stride;

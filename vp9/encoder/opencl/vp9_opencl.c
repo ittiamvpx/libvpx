@@ -13,6 +13,8 @@
 #include "vp9/encoder/opencl/vp9_opencl.h"
 
 #define OPENCL_DEVELOPER_MODE 1
+#define BUILD_OPTION_LENGTH 128
+#define INTEL_HD_GRAPHICS_ID 32902
 #if ARCH_ARM
 #define PREFIX_PATH "./"
 #else
@@ -22,8 +24,8 @@
 static const int pixel_rows_per_workitem_log2_inter_pred[GPU_BLOCK_SIZES]
                                                          = {3, 2, 0};
 
-static const int pixel_rows_per_workitem_log2_full_pixel_search[GPU_BLOCK_SIZES]
-                                                                = {5, 3, 3};
+static const int pixel_rows_per_workitem_log2_motion_search[GPU_BLOCK_SIZES]
+                                                            = {5, 3, 3};
 
 static char *read_src(const char *src_file_name) {
   FILE *fp;
@@ -355,7 +357,7 @@ static GPU_OUTPUT* vp9_opencl_execute(VP9_COMP *cpi,
   const size_t workitem_size[2] = { NUM_PIXELS_PER_WORKITEM, 1 };
   size_t MB_size[2];
   size_t local_size[2];
-  size_t local_size_full_pixel_search[2], local_size_inter_pred[2];
+  size_t local_size_motion_search[2], local_size_inter_pred[2];
   size_t global_size[2];
   const int b_width_in_pixels_log2 = b_width_log2(bsize) + 2;
   const int b_height_in_pixels_log2 = b_height_log2(bsize) + 2;
@@ -436,25 +438,24 @@ static GPU_OUTPUT* vp9_opencl_execute(VP9_COMP *cpi,
     assert(status == CL_SUCCESS);
   }
 
-  local_size_full_pixel_search[0] = local_size[0];
-  local_size_full_pixel_search[1] =
-      local_size[1] >> pixel_rows_per_workitem_log2_full_pixel_search[gpu_bsize];
+  local_size_motion_search[0] = local_size[0];
+  local_size_motion_search[1] =
+      local_size[1] >> pixel_rows_per_workitem_log2_motion_search[gpu_bsize];
 
-  global_size[0] = num_block_cols * local_size_full_pixel_search[0];
-  global_size[1] = num_block_rows * local_size_full_pixel_search[1];
+  global_size[0] = num_block_cols * local_size_motion_search[0];
+  global_size[1] = num_block_rows * local_size_motion_search[1];
 
   if(gpu_bsize == GPU_BLOCK_8X8)
-    assert(local_size_full_pixel_search[0] * local_size_full_pixel_search[1] == 1);
+    assert(local_size_motion_search[0] * local_size_motion_search[1] == 1);
 
   status = clEnqueueNDRangeKernel(
       opencl->cmd_queue, opencl->vp9_pick_inter_mode_part0[gpu_bsize],
       2,
       NULL,
       global_size,
-      (gpu_bsize == GPU_BLOCK_8X8) ? NULL : local_size_full_pixel_search,
+      (gpu_bsize == GPU_BLOCK_8X8) ? NULL : local_size_motion_search,
       0, NULL, NULL);
   assert(status == CL_SUCCESS);
-
 
   global_size[0] = num_block_cols * local_size[0];
   global_size[1] = num_block_rows * local_size[1];
@@ -467,12 +468,16 @@ static GPU_OUTPUT* vp9_opencl_execute(VP9_COMP *cpi,
                                   0, NULL, NULL);
   assert(status == CL_SUCCESS);
 
-  status = clEnqueueNDRangeKernel(opencl->cmd_queue,
-                                  opencl->vp9_pick_inter_mode_part2[gpu_bsize],
-                                  2,
-                                  NULL,
-                                  global_size, local_size,
-                                  0, NULL, NULL);
+  global_size[0] = num_block_cols * local_size_motion_search[0];
+  global_size[1] = num_block_rows * local_size_motion_search[1];
+
+  status = clEnqueueNDRangeKernel(
+      opencl->cmd_queue, opencl->vp9_pick_inter_mode_part2[gpu_bsize],
+      2,
+      NULL,
+      global_size,
+      (gpu_bsize == GPU_BLOCK_8X8) ? NULL : local_size_motion_search,
+      0, NULL, NULL);
   assert(status == CL_SUCCESS);
 
   local_size_inter_pred[0] = local_size[0];
@@ -554,23 +559,24 @@ fail:
 int vp9_opencl_init(VP9_GPU *gpu) {
   VP9_OPENCL *opencl;
   cl_int status;
-
   cl_uint num_platforms = 0;
   cl_platform_id platform;
   cl_uint num_devices = 0;
   cl_device_id device;
+  cl_uint vendor_id;
   const cl_command_queue_properties command_queue_properties = 0;
   cl_program program;
   // TODO(karthick-ittiam) : Pass this prefix path as an input from testbench
   const char *kernel_file_name= PREFIX_PATH"vp9_pick_inter_mode.cl";
 
   // TODO(karthick-ittiam) : Fix this hardcoding
-  const char *build_options_full_pixel_search[GPU_BLOCK_SIZES] = {
-      "-DBLOCK_SIZE_IN_PIXELS=32 -DPIXEL_ROWS_PER_WORKITEM=32",
-      "-DBLOCK_SIZE_IN_PIXELS=16 -DPIXEL_ROWS_PER_WORKITEM=8",
-      "-DBLOCK_SIZE_IN_PIXELS=8 -DPIXEL_ROWS_PER_WORKITEM=8" };
+  char build_options_combined_motion_search[GPU_BLOCK_SIZES][BUILD_OPTION_LENGTH] = {
+      "-DBLOCK_SIZE_IN_PIXELS=32 -DPIXEL_ROWS_PER_WORKITEM=32 -DINTEL_HD_GRAPHICS=0",
+      "-DBLOCK_SIZE_IN_PIXELS=16 -DPIXEL_ROWS_PER_WORKITEM=8 -DINTEL_HD_GRAPHICS=0",
+      "-DBLOCK_SIZE_IN_PIXELS=8 -DPIXEL_ROWS_PER_WORKITEM=8 -DINTEL_HD_GRAPHICS=0"
+  };
 
-  const char *build_options[GPU_BLOCK_SIZES] = {
+  const char build_options[GPU_BLOCK_SIZES][BUILD_OPTION_LENGTH] = {
       "-DBLOCK_SIZE_IN_PIXELS=32 -DPIXEL_ROWS_PER_WORKITEM=8",
       "-DBLOCK_SIZE_IN_PIXELS=16 -DPIXEL_ROWS_PER_WORKITEM=4",
       "-DBLOCK_SIZE_IN_PIXELS=8 -DPIXEL_ROWS_PER_WORKITEM=1" };
@@ -606,6 +612,13 @@ int vp9_opencl_init(VP9_GPU *gpu) {
   if (status != CL_SUCCESS)
     goto fail;
 
+  status = clGetDeviceInfo(device, CL_DEVICE_VENDOR_ID,
+                           sizeof(cl_uint),
+                           &vendor_id,
+                           NULL);
+  if (status != CL_SUCCESS)
+    goto fail;
+
   // Create OpenCL context for one device
   opencl->context = clCreateContext(NULL, 1, &device, NULL, NULL, &status);
   if (status != CL_SUCCESS || opencl->context == NULL)
@@ -632,9 +645,13 @@ int vp9_opencl_init(VP9_GPU *gpu) {
     if (status != CL_SUCCESS)
       goto fail;
 
-
+    if(vendor_id == INTEL_HD_GRAPHICS_ID) {
+      int string_length = strlen(build_options_combined_motion_search[gpu_bsize]);
+      build_options_combined_motion_search[gpu_bsize][string_length - 1] = '1';
+    }
     // Build the program
-    status = clBuildProgram(program, 1, &device, build_options_full_pixel_search[gpu_bsize],
+    status = clBuildProgram(program, 1, &device,
+                            build_options_combined_motion_search[gpu_bsize],
                             NULL, NULL);
     if (status != CL_SUCCESS) {
     // Enable this if you are a OpenCL developer and need to print the build
@@ -667,6 +684,11 @@ int vp9_opencl_init(VP9_GPU *gpu) {
     }
     opencl->vp9_pick_inter_mode_part0[gpu_bsize] = clCreateKernel(
         program, "vp9_pick_inter_mode_part0", &status);
+    if (status != CL_SUCCESS)
+      goto fail;
+
+    opencl->vp9_pick_inter_mode_part2[gpu_bsize] = clCreateKernel(
+        program, "vp9_pick_inter_mode_part2", &status);
     if (status != CL_SUCCESS)
       goto fail;
   }
@@ -720,11 +742,6 @@ int vp9_opencl_init(VP9_GPU *gpu) {
     }
     opencl->vp9_pick_inter_mode_part1[gpu_bsize] = clCreateKernel(
         program, "vp9_pick_inter_mode_part1", &status);
-    if (status != CL_SUCCESS)
-      goto fail;
-
-    opencl->vp9_pick_inter_mode_part2[gpu_bsize] = clCreateKernel(
-        program, "vp9_pick_inter_mode_part2", &status);
     if (status != CL_SUCCESS)
       goto fail;
 
