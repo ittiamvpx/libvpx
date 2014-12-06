@@ -65,6 +65,18 @@ static char *read_src(const char *src_file_name) {
   return src;
 }
 
+static cl_ulong get_event_time_elapsed(cl_event event) {
+  cl_ulong startTime, endTime;
+  cl_int status = 0;
+
+  status  = clGetEventProfilingInfo(event, CL_PROFILING_COMMAND_START,
+                                   sizeof(cl_ulong), &startTime, NULL);
+  status |= clGetEventProfilingInfo(event, CL_PROFILING_COMMAND_END,
+                                    sizeof(cl_ulong), &endTime, NULL);
+  assert(status == CL_SUCCESS);
+  return (endTime - startTime);
+}
+
 
 static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
   VP9_COMMON *const cm = &cpi->common;
@@ -365,6 +377,20 @@ static GPU_OUTPUT* vp9_opencl_execute(VP9_COMP *cpi,
   const int b_height_mask = (1 << b_height_in_pixels_log2) - 1;
   int num_block_cols = cm->width >> b_width_in_pixels_log2;
   int num_block_rows = cm->height >> b_height_in_pixels_log2;
+#if OPENCL_PROFILING
+  cl_event event[NUM_KERNELS];
+#endif
+  cl_event *event_ptr[NUM_KERNELS];
+  int i;
+
+  for(i = 0; i < NUM_KERNELS; i++) {
+#if OPENCL_PROFILING
+    event_ptr[i] = &event[i];
+#else
+    event_ptr[i] = NULL;
+#endif
+  }
+
 
   // If width or Height is not a multiple of block size
   if (cm->width & b_width_mask)
@@ -454,18 +480,18 @@ static GPU_OUTPUT* vp9_opencl_execute(VP9_COMP *cpi,
       NULL,
       global_size,
       (gpu_bsize == GPU_BLOCK_8X8) ? NULL : local_size_motion_search,
-      0, NULL, NULL);
+      0, NULL, event_ptr[0]);
   assert(status == CL_SUCCESS);
 
-  global_size[0] = num_block_cols * local_size[0];
-  global_size[1] = num_block_rows * local_size[1];
+  global_size[0] = num_block_cols;
+  global_size[1] = num_block_rows;
 
   status = clEnqueueNDRangeKernel(opencl->cmd_queue,
                                   opencl->vp9_pick_inter_mode_part1[gpu_bsize],
                                   2,
                                   NULL,
-                                  global_size, local_size,
-                                  0, NULL, NULL);
+                                  global_size, NULL,
+                                  0, NULL, event_ptr[1]);
   assert(status == CL_SUCCESS);
 
   global_size[0] = num_block_cols * local_size_motion_search[0];
@@ -477,7 +503,7 @@ static GPU_OUTPUT* vp9_opencl_execute(VP9_COMP *cpi,
       NULL,
       global_size,
       (gpu_bsize == GPU_BLOCK_8X8) ? NULL : local_size_motion_search,
-      0, NULL, NULL);
+      0, NULL, event_ptr[2]);
   assert(status == CL_SUCCESS);
 
   local_size_inter_pred[0] = local_size[0];
@@ -492,7 +518,7 @@ static GPU_OUTPUT* vp9_opencl_execute(VP9_COMP *cpi,
                                   2,
                                   NULL,
                                   global_size, local_size_inter_pred,
-                                  0, NULL, NULL);
+                                  0, NULL, event_ptr[3]);
   assert(status == CL_SUCCESS);
 
   global_size[0] = num_block_cols;
@@ -502,7 +528,7 @@ static GPU_OUTPUT* vp9_opencl_execute(VP9_COMP *cpi,
                                   2,
                                   NULL,
                                   global_size, NULL,
-                                  0, NULL, NULL);
+                                  0, NULL, event_ptr[4]);
   assert(status == CL_SUCCESS);
 
   opencl->output_rd_mapped[gpu_bsize] = clEnqueueMapBuffer(
@@ -513,6 +539,16 @@ static GPU_OUTPUT* vp9_opencl_execute(VP9_COMP *cpi,
       &status);
   assert(status == CL_SUCCESS);
 
+#if OPENCL_PROFILING
+  for(i = 0; i < NUM_KERNELS; i++)
+  {
+    cl_ulong time_elapsed;
+    clWaitForEvents(1, event_ptr[i]);
+    time_elapsed = get_event_time_elapsed(*event_ptr[i]);
+    opencl->total_time_taken[gpu_bsize][i] += time_elapsed / 1000;
+    clReleaseEvent(*event_ptr[i]);
+  }
+#endif
   return opencl->output_rd_mapped[gpu_bsize];
 }
 
@@ -520,8 +556,24 @@ static void vp9_opencl_remove(VP9_COMP *cpi) {
   VP9_OPENCL *const opencl = (VP9_OPENCL *)cpi->gpu.compute_framework;
   GPU_BLOCK_SIZE gpu_bsize;
   cl_int status;
+#if OPENCL_PROFILING
+  int i;
+  cl_ulong total[NUM_KERNELS] = {0};
+  cl_ulong grand_total = 0;
+  fprintf(stdout, "\nOPENCL PROFILE RESULTS\n");
+#endif
 
   for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+#if OPENCL_PROFILING
+    fprintf(stdout, "\nBlock size idx = %d\n", gpu_bsize);
+    for(i = 0; i < NUM_KERNELS; i++)
+    {
+      total[i] += opencl->total_time_taken[gpu_bsize][i];
+      fprintf(stdout, "\tKernel %d - TOTAL = %"PRIu64" microseconds\n", i,
+              opencl->total_time_taken[gpu_bsize][i]);
+    }
+#endif
+
     status = clReleaseKernel(opencl->vp9_pick_inter_mode_part0[gpu_bsize]);
     if (status != CL_SUCCESS)
       goto fail;
@@ -538,6 +590,17 @@ static void vp9_opencl_remove(VP9_COMP *cpi) {
     if (status != CL_SUCCESS)
       goto fail;
   }
+#if OPENCL_PROFILING
+  fprintf(stdout, "\nTOTAL FOR ALL BLOCK SIZES\n");
+  for(i = 0; i < NUM_KERNELS; i++)
+  {
+    grand_total += total[i];
+    fprintf(stdout,
+            "\tKernel %d - TOTAL ALL BLOCK SIZES = %"PRIu64" microseconds\n",
+            i, total[i]);
+  }
+  fprintf(stdout, "\nGRAND TOTAL = %"PRIu64"\n", grand_total);
+#endif
 
   status = clReleaseKernel(opencl->vp9_is_8x8_required);
   if (status != CL_SUCCESS)
@@ -564,7 +627,7 @@ int vp9_opencl_init(VP9_GPU *gpu) {
   cl_uint num_devices = 0;
   cl_device_id device;
   cl_uint vendor_id;
-  const cl_command_queue_properties command_queue_properties = 0;
+  cl_command_queue_properties command_queue_properties = 0;
   cl_program program;
   // TODO(karthick-ittiam) : Pass this prefix path as an input from testbench
   const char *kernel_file_name= PREFIX_PATH"vp9_pick_inter_mode.cl";
@@ -591,6 +654,9 @@ int vp9_opencl_init(VP9_GPU *gpu) {
   gpu->remove = vp9_opencl_remove;
   opencl = gpu->compute_framework;
 
+#if OPENCL_PROFILING
+  command_queue_properties = CL_QUEUE_PROFILING_ENABLE;
+#endif
 
   // Get the number of platforms in the system.
   status = clGetPlatformIDs(0, NULL, &num_platforms);

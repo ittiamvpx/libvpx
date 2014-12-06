@@ -17,7 +17,9 @@ extern "C" {
 
 #include <vp9/encoder/opencl/CL/cl.h>
 
+#define OPENCL_PROFILING        1
 #define NUM_PIXELS_PER_WORKITEM 8
+#define NUM_KERNELS             5
 
 struct VP9_COMP;
 typedef struct VP9_OPENCL {
@@ -46,6 +48,9 @@ typedef struct VP9_OPENCL {
   cl_int           mi_rows;
   cl_int           mi_cols;
   cl_int           stride;
+#if OPENCL_PROFILING
+  cl_ulong         total_time_taken[GPU_BLOCK_SIZES][NUM_KERNELS];
+#endif
 } VP9_OPENCL;
 
 int vp9_opencl_init(VP9_GPU *gpu);

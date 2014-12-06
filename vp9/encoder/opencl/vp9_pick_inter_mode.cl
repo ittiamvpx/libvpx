@@ -1968,9 +1968,6 @@ exit:
 }
 
 __kernel
-__attribute__((reqd_work_group_size(BLOCK_SIZE_IN_PIXELS / NUM_PIXELS_PER_WORKITEM,
-                                    BLOCK_SIZE_IN_PIXELS,
-                                    1)))
 void vp9_pick_inter_mode_part1(__global uchar *ref_frame,
     __global uchar *cur_frame,
     int stride,
@@ -1981,20 +1978,15 @@ void vp9_pick_inter_mode_part1(__global uchar *ref_frame,
     int mi_cols,
     __global GPU_OUTPUT *pred_mv
 ) {
-
-  __local uchar8 intermediate_uchar8[(BLOCK_SIZE_IN_PIXELS*(BLOCK_SIZE_IN_PIXELS + 7))/NUM_PIXELS_PER_WORKITEM];
-  __local int *intermediate_int = (__local int *)intermediate_uchar8;
   __global int   *nmvcost_0        = rd_parameters->mvcost[0] + MV_MAX;
   __global int   *nmvcost_1        = rd_parameters->mvcost[1] + MV_MAX;
   __global int   *nmvjointcost     = rd_parameters->nmvjointcost;
 
   int global_col = get_global_id(0);
   int global_row = get_global_id(1);
-  int global_offset = (global_row * stride) + (global_col * NUM_PIXELS_PER_WORKITEM);
-
-  int group_col = get_group_id(0);
-  int group_row = get_group_id(1);
-  int group_stride = get_num_groups(0);
+  int global_stride = get_global_size(0);
+  int global_offset = (global_row * stride * BLOCK_SIZE_IN_PIXELS) +
+                      (global_col * BLOCK_SIZE_IN_PIXELS);
 
   int local_col = get_local_id(0);
   int local_row = get_local_id(1);
@@ -2014,7 +2006,6 @@ void vp9_pick_inter_mode_part1(__global uchar *ref_frame,
   short8 c;
 
   global_offset += (VP9_ENC_BORDER_IN_PIXELS * stride) + VP9_ENC_BORDER_IN_PIXELS;
-  mv_input      += (group_row * group_stride + group_col);
 
 #if BLOCK_SIZE_IN_PIXELS == 32
   int bsize = BLOCK_32X32;
@@ -2024,13 +2015,12 @@ void vp9_pick_inter_mode_part1(__global uchar *ref_frame,
   int bsize = BLOCK_8X8;
 #endif
 
-  sse_variance_output += (group_row * group_stride + group_col);
-#if BLOCK_SIZE_IN_PIXELS != 32
-  pred_mv += (group_row/2 * group_stride/2 + group_col/2);
-#endif
+  mv_input            += (global_row * global_stride + global_col);
+  sse_variance_output += (global_row * global_stride + global_col);
+  pred_mv             += (global_row/2 * global_stride/2 + global_col/2);
 
   cur_frame += global_offset;
-  uchar8 curr_data = vload8(0, cur_frame);
+  uchar8 curr_data;
   uchar8 pred_data;
   PREDICTION_MODE best_mode = ZEROMV;
   INTERP_FILTER newmv_filter, best_pred_filter = EIGHTTAP;
@@ -2049,7 +2039,7 @@ void vp9_pick_inter_mode_part1(__global uchar *ref_frame,
   if(!mv_input->do_compute)
     goto exit;
 
-  mi_row = global_row / NUM_PIXELS_PER_WORKITEM;
+  mi_row = (global_row * PIXEL_ROWS_PER_WORKITEM) / MI_SIZE;
   mi_col = global_col;
 #if BLOCK_SIZE_IN_PIXELS == 32
   mi_row = (mi_row >> 2) << 2;
@@ -2071,24 +2061,55 @@ void vp9_pick_inter_mode_part1(__global uchar *ref_frame,
 
   // ZEROMV not required for BLOCK_32X32
   if (BLOCK_SIZE_IN_PIXELS != 32) {
-    pred_data = vload8(0, ref_frame);
-    CALCULATE_SSE_VAR(curr_data, pred_data)
+    int row, col;
+    short8 vsum = 0;
+    uint4 vsse = 0;
+
+    for(row = 0; row < BLOCK_SIZE_IN_PIXELS; row++)
+    {
+      curr_data = vload8(0, cur_frame);
+      pred_data = vload8(0, ref_frame);
+      short8 diff = convert_short8(curr_data) - convert_short8(pred_data);
+      vsum += diff;
+      vsse += convert_uint4(convert_int4(diff.s0123) * convert_int4(diff.s0123));
+      vsse += convert_uint4(convert_int4(diff.s4567) * convert_int4(diff.s4567));
+
+      if (BLOCK_SIZE_IN_PIXELS == 16) {
+        curr_data = vload8(1, cur_frame);
+        pred_data = vload8(1, ref_frame);
+        short8 diff = convert_short8(curr_data) - convert_short8(pred_data);
+        vsum += diff;
+        vsse += convert_uint4(convert_int4(diff.s0123) * convert_int4(diff.s0123));
+        vsse += convert_uint4(convert_int4(diff.s4567) * convert_int4(diff.s4567));
+      }
+      cur_frame += stride;
+      ref_frame += stride;
+    }
+
+    vsum.s0123 = vsum.s0123 + vsum.s4567;
+    vsum.s01   = vsum.s01   + vsum.s23;
+    vsum.s0    = vsum.s0    + vsum.s1;
+    sum = vsum.s0;
+    vsse.s01   = vsse.s01   + vsse.s23;
+    vsse.s0    = vsse.s0    + vsse.s1;
+    sse = vsse.s0;
+    variance = sse - ((long)sum * sum) / (BLOCK_SIZE_IN_PIXELS * BLOCK_SIZE_IN_PIXELS);
+
     CALCULATE_RATE_DIST
     actual_rate += rd_parameters->inter_mode_cost[mv_input->mode_context]
                                                  [GPU_INTER_OFFSET(ZEROMV)];
     this_rd = RDCOST(rd_parameters->rd_mult, rd_parameters->rd_div,
         actual_rate, actual_dist);
-    if (this_rd < best_rd) {
-      best_rd = this_rd;
-      sse_variance_output->returnrate = actual_rate;
-      sse_variance_output->returndistortion = actual_dist;
-      sse_variance_output->best_rd = this_rd;
-      sse_variance_output->best_mode = ZEROMV;
-      sse_variance_output->best_pred_filter = EIGHTTAP;
-      sse_variance_output->skip_txfm = skip_txfm;
-      sse_variance_output->tx_size = tx_size;
 
-    }
+    best_rd = this_rd;
+    sse_variance_output->returnrate = actual_rate;
+    sse_variance_output->returndistortion = actual_dist;
+    sse_variance_output->best_rd = this_rd;
+    sse_variance_output->best_mode = ZEROMV;
+    sse_variance_output->best_pred_filter = EIGHTTAP;
+    sse_variance_output->skip_txfm = skip_txfm;
+    sse_variance_output->tx_size = tx_size;
+
     if (this_rd < (int64_t)(1 << num_pels_log2_lookup[bsize]))
     {
       mv_input->do_newmv = 0;
@@ -2167,7 +2188,8 @@ void vp9_pick_inter_mode_part2(__global uchar *ref_frame,
 
   int mi_row, mi_col;
 
-  int global_offset = ((global_row * PIXEL_ROWS_PER_WORKITEM) * stride) + (global_col * NUM_PIXELS_PER_WORKITEM);
+  int global_offset = (global_row * PIXEL_ROWS_PER_WORKITEM * stride) +
+                      (global_col * NUM_PIXELS_PER_WORKITEM);
 
 #if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
   mv_input            += (group_row * group_stride + group_col);
