@@ -2041,8 +2041,8 @@ void vp9_full_pixel_search_zeromv(__global uchar *ref_frame,
   if(!mv_input->do_compute)
     goto exit;
 
-  mi_row = (global_row * PIXEL_ROWS_PER_WORKITEM) / MI_SIZE;
-  mi_col = global_col;
+  mi_row = global_row * (BLOCK_SIZE_IN_PIXELS / NUM_PIXELS_PER_WORKITEM);
+  mi_col = global_col * (BLOCK_SIZE_IN_PIXELS / NUM_PIXELS_PER_WORKITEM);
 #if BLOCK_SIZE_IN_PIXELS == 32
   mi_row = (mi_row >> 2) << 2;
   mi_col = (mi_col >> 2) << 2;
@@ -2090,8 +2090,8 @@ void vp9_full_pixel_search_zeromv(__global uchar *ref_frame,
 
     vsum.s0123 = vsum.s0123 + vsum.s4567;
     vsum.s01   = vsum.s01   + vsum.s23;
-    vsum.s0    = vsum.s0    + vsum.s1;
-    sum = vsum.s0;
+    sum        = (int)vsum.s0 + vsum.s1;
+
     vsse.s01   = vsse.s01   + vsse.s23;
     vsse.s0    = vsse.s0    + vsse.s1;
     sse = vsse.s0;
