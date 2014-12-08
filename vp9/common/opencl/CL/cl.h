@@ -29,7 +29,7 @@
 #ifdef __APPLE__
 #include <OpenCL/cl_platform.h>
 #else
-#include <vp9/encoder/opencl/CL/cl_platform.h>
+#include <vp9/common/opencl/CL/cl_platform.h>
 #endif	
 
 #ifdef __cplusplus

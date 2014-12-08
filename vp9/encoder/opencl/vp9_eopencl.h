@@ -15,8 +15,9 @@
 extern "C" {
 #endif
 
+#include <vp9/common/opencl/CL/cl.h>
+
 #include "vp9/encoder/vp9_encoder.h"
-#include <vp9/encoder/opencl/CL/cl.h>
 
 #define NUM_PIXELS_PER_WORKITEM 8
 #define NUM_KERNELS             5
