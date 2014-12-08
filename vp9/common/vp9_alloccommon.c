@@ -16,6 +16,7 @@
 #include "vp9/common/vp9_entropymv.h"
 #include "vp9/common/vp9_onyxc_int.h"
 #include "vp9/common/vp9_systemdependent.h"
+#include "vp9/common/vp9_gpu.h"
 
 static void clear_mi_border(const VP9_COMMON *cm, MODE_INFO *mi) {
   int i;
@@ -135,7 +136,12 @@ void vp9_free_ref_frame_buffers(VP9_COMMON *cm) {
   int i;
 
   for (i = 0; i < FRAME_BUFFERS; ++i) {
-    vp9_free_frame_buffer(&cm->frame_bufs[i].buf);
+#if CONFIG_GPU_COMPUTE
+    if (cm->use_gpu)
+      vp9_gpu_free_frame_buffer(cm, &cm->frame_bufs[i].buf);
+    else
+#endif
+      vp9_free_frame_buffer(&cm->frame_bufs[i].buf);
 
     if (cm->frame_bufs[i].ref_count > 0 &&
         cm->frame_bufs[i].raw_frame_buffer.data != NULL) {
@@ -218,18 +224,40 @@ int vp9_alloc_ref_frame_buffers(VP9_COMMON *cm, int width, int height) {
   int i;
   const int ss_x = cm->subsampling_x;
   const int ss_y = cm->subsampling_y;
+  vpx_get_frame_buffer_cb_fn_t cb = NULL;
+  vpx_codec_frame_buffer_t *codec_frame_buffer = NULL;
+  void *cb_priv = NULL;
 
   vp9_free_ref_frame_buffers(cm);
 
   for (i = 0; i < FRAME_BUFFERS; ++i) {
-    cm->frame_bufs[i].ref_count = 0;
-    if (vp9_alloc_frame_buffer(&cm->frame_bufs[i].buf, width, height,
-                               ss_x, ss_y,
+#if CONFIG_GPU_COMPUTE
+    vpx_codec_frame_buffer_t raw_frame_buffer;
+    gpu_cb_priv gpu_priv = {cm, &cm->frame_bufs[i].buf};
+
+    if (cm->use_gpu) {
+      cb = vp9_gpu_get_frame_buffer;
+      codec_frame_buffer = &raw_frame_buffer;
+      cb_priv = &gpu_priv;
+    }
 #if CONFIG_VP9_HIGHBITDEPTH
-                               cm->use_highbitdepth,
+    // gpu kernels for now do not support higher bit depths.
+    assert(cm->use_highbitdepth == 0);
 #endif
-                               VP9_ENC_BORDER_IN_PIXELS) < 0)
-      goto fail;
+#endif
+    cm->frame_bufs[i].ref_count = 0;
+    if (&cm->frame_bufs[i].buf) {
+      vp9_free_frame_buffer(&cm->frame_bufs[i].buf);
+      if (vp9_realloc_frame_buffer(&cm->frame_bufs[i].buf, width, height,
+                                   ss_x, ss_y,
+#if CONFIG_VP9_HIGHBITDEPTH
+                                   cm->use_highbitdepth,
+#endif
+                                   VP9_ENC_BORDER_IN_PIXELS,
+                                   codec_frame_buffer, cb, cb_priv)){
+        goto fail;
+      }
+    }
   }
 
   init_frame_bufs(cm);

@@ -42,7 +42,7 @@
 #include "vp9/encoder/vp9_denoiser.h"
 #endif
 #include "vp9/encoder/vp9_ethread.h"
-#include "vp9/encoder/vp9_gpu.h"
+#include "vp9/encoder/vp9_egpu.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -433,7 +433,7 @@ typedef struct VP9_COMP {
   VP9_DENOISER denoiser;
 #endif
 #if CONFIG_GPU_COMPUTE
-  VP9_GPU gpu;
+  VP9_EGPU egpu;
 #endif
 } VP9_COMP;
 

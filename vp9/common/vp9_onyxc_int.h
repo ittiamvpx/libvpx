@@ -21,6 +21,7 @@
 #include "vp9/common/vp9_frame_buffers.h"
 #include "vp9/common/vp9_quant_common.h"
 #include "vp9/common/vp9_tile_common.h"
+#include "vp9/common/vp9_gpu.h"
 
 #if CONFIG_VP9_POSTPROC
 #include "vp9/common/vp9_postproc.h"
@@ -209,6 +210,9 @@ typedef struct VP9Common {
   int log2_tile_cols, log2_tile_rows;
 
   int use_gpu;
+#if CONFIG_GPU_COMPUTE
+  VP9_GPU gpu;
+#endif
 
   // Private data associated with the frame buffer callbacks.
   void *cb_priv;

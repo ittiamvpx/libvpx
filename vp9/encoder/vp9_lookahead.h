@@ -47,12 +47,15 @@ struct lookahead_ctx {
   struct lookahead_entry *buf; /* Buffer list */
 };
 
+struct VP9Common;
+
 /**\brief Initializes the lookahead stage
  *
  * The lookahead stage is a queue of frame buffers on which some analysis
  * may be done when buffers are enqueued.
  */
-struct lookahead_ctx *vp9_lookahead_init(unsigned int width,
+struct lookahead_ctx *vp9_lookahead_init(struct VP9Common *cm,
+                                         unsigned int width,
                                          unsigned int height,
                                          unsigned int subsampling_x,
                                          unsigned int subsampling_y,
@@ -64,7 +67,7 @@ struct lookahead_ctx *vp9_lookahead_init(unsigned int width,
 
 /**\brief Destroys the lookahead stage
  */
-void vp9_lookahead_destroy(struct lookahead_ctx *ctx);
+void vp9_lookahead_destroy(struct VP9Common *cm, struct lookahead_ctx *ctx);
 
 
 /**\brief Enqueue a source buffer

@@ -418,7 +418,7 @@ typedef struct GPU_OUTPUT_STAGE1 {
   int rate_mv;
 } GPU_OUTPUT_STAGE1;
 
-typedef struct GPU_INPUT {
+struct GPU_INPUT {
   MV nearest_mv;
   MV near_mv;
   INTERP_FILTER filter_type;
@@ -426,9 +426,10 @@ typedef struct GPU_INPUT {
   int rate_mv;
   int do_newmv;
   int do_compute;
-} GPU_INPUT;
+} __attribute__ ((aligned(32)));
+typedef struct GPU_INPUT GPU_INPUT;
 
-typedef struct GPU_OUTPUT {
+struct GPU_OUTPUT {
   MV mv;
   int rate_mv;
   int          sum[EIGHTTAP_SHARP + 1];
@@ -440,7 +441,8 @@ typedef struct GPU_OUTPUT {
   INTERP_FILTER best_pred_filter;
   int skip_txfm;
   TX_SIZE tx_size;
-} GPU_OUTPUT;
+} __attribute__ ((aligned(32)));
+typedef struct GPU_OUTPUT GPU_OUTPUT;
 
 typedef struct GPU_RD_PARAMETERS {
   int rd_mult;
@@ -1875,7 +1877,7 @@ __attribute__((reqd_work_group_size(BLOCK_SIZE_IN_PIXELS / NUM_PIXELS_PER_WORKIT
                                     BLOCK_SIZE_IN_PIXELS / PIXEL_ROWS_PER_WORKITEM,
                                     1)))
 #endif
-void vp9_pick_inter_mode_part0(__global uchar *ref_frame,
+void vp9_full_pixel_search(__global uchar *ref_frame,
     __global uchar *cur_frame,
     int stride,
     __global GPU_INPUT *mv_input,
@@ -1968,7 +1970,7 @@ exit:
 }
 
 __kernel
-void vp9_pick_inter_mode_part1(__global uchar *ref_frame,
+void vp9_full_pixel_search_zeromv(__global uchar *ref_frame,
     __global uchar *cur_frame,
     int stride,
     __global GPU_INPUT *mv_input,
@@ -2152,7 +2154,7 @@ __attribute__((reqd_work_group_size(BLOCK_SIZE_IN_PIXELS / NUM_PIXELS_PER_WORKIT
                                     BLOCK_SIZE_IN_PIXELS / PIXEL_ROWS_PER_WORKITEM,
                                     1)))
 #endif
-void vp9_pick_inter_mode_part2(__global uchar *ref_frame,
+void vp9_sub_pixel_search(__global uchar *ref_frame,
     __global uchar *cur_frame,
     int stride,
     __global GPU_INPUT *mv_input,
@@ -2257,7 +2259,7 @@ __kernel
 __attribute__((reqd_work_group_size(BLOCK_SIZE_IN_PIXELS / NUM_PIXELS_PER_WORKITEM,
                                     BLOCK_SIZE_IN_PIXELS / PIXEL_ROWS_PER_WORKITEM,
                                     1)))
-void vp9_pick_inter_mode_part3(__global uchar *ref_frame,
+void vp9_inter_prediction_and_sse(__global uchar *ref_frame,
     __global uchar *cur_frame,
     int stride,
     __global GPU_INPUT *mv_input,
@@ -2360,7 +2362,7 @@ exit:
 }
 
 __kernel
-void vp9_pick_inter_mode_part4(__global uchar *ref_frame,
+void vp9_rd_calculation(__global uchar *ref_frame,
     __global uchar *cur_frame,
     int stride,
     __global GPU_INPUT *mv_input,

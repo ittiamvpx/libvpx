@@ -8,17 +8,11 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#ifndef VP9_ENCODER_VP9_GPU_H_
-#define VP9_ENCODER_VP9_GPU_H_
+#ifndef VP9_ENCODER_VP9_EGPU_H_
+#define VP9_ENCODER_VP9_EGPU_H_
 
 #ifdef __cplusplus
 extern "C" {
-#endif
-
-#if CONFIG_OPENCL
-#define CONFIG_GPU_COMPUTE 1
-#else
-#define CONFIG_GPU_COMPUTE 0
 #endif
 
 #include "vp9/common/vp9_blockd.h"
@@ -31,6 +25,9 @@ extern "C" {
 #include "vp9/encoder/vp9_block.h"
 #include "vp9/encoder/vp9_rd.h"
 
+#define GPU_INTER_MODES 2 // ZEROMV and NEWMV
+#define MAX_SUB_FRAMES 4
+
 // Block sizes for which MV computations are done in GPU
 typedef enum GPU_BLOCK_SIZE {
   GPU_BLOCK_32X32,
@@ -40,10 +37,9 @@ typedef enum GPU_BLOCK_SIZE {
   GPU_BLOCK_INVALID = GPU_BLOCK_SIZES
 } GPU_BLOCK_SIZE;
 
-#define GPU_INTER_MODES 2 // ZEROMV and NEWMV
 struct VP9_COMP;
 
-typedef struct GPU_INPUT {
+struct GPU_INPUT {
   MV nearest_mv;
   MV near_mv;
   INTERP_FILTER filter_type;
@@ -51,12 +47,13 @@ typedef struct GPU_INPUT {
   int rate_mv;
   int do_newmv;
   int do_compute;
-} GPU_INPUT;
+} __attribute__ ((aligned(32)));
+typedef struct GPU_INPUT GPU_INPUT;
 
-typedef struct GPU_OUTPUT {
+struct GPU_OUTPUT {
   MV mv;
   int rate_mv;
-  int          sum[EIGHTTAP_SHARP + 1];
+  int sum[EIGHTTAP_SHARP + 1];
   unsigned int sse[EIGHTTAP_SHARP + 1];
   int returnrate;
   int64_t returndistortion;
@@ -65,7 +62,8 @@ typedef struct GPU_OUTPUT {
   INTERP_FILTER best_pred_filter;
   int skip_txfm;
   TX_SIZE tx_size;
-} GPU_OUTPUT;
+} __attribute__ ((aligned(32)));
+typedef struct GPU_OUTPUT GPU_OUTPUT;
 
 typedef struct GPU_RD_PARAMETERS {
   int rd_mult;
@@ -84,18 +82,28 @@ typedef struct GPU_RD_PARAMETERS {
   int nmvjointcost[MV_JOINTS];
 } GPU_RD_PARAMETERS;
 
-typedef struct VP9_GPU {
+typedef struct SubFrameInfo {
+  int mi_row_start, mi_row_end;
+} SubFrameInfo;
+
+typedef struct VP9_EGPU {
   void *compute_framework;
-  void (*alloc_buffers)(struct VP9_COMP *cpi);
-  void (*free_buffers)(struct VP9_COMP *cpi);
-  void *(*acquire_input_buffer)(struct VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize);
-  void *(*acquire_rd_parameters)(struct VP9_COMP *cpi);
-  GPU_OUTPUT *(*execute)(struct VP9_COMP *cpi, uint8_t* reference_frame,
-                         uint8_t* current_frame, GPU_BLOCK_SIZE gpu_bsize);
-  void (*remove)(struct VP9_COMP *cpi);
   GPU_INPUT *gpu_input[GPU_BLOCK_SIZES];
   GPU_OUTPUT *gpu_output[GPU_BLOCK_SIZES];
-} VP9_GPU;
+
+  void (*alloc_buffers)(struct VP9_COMP *cpi);
+  void (*free_buffers)(struct VP9_COMP *cpi);
+  void (*acquire_input_buffer)(struct VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
+                               void **host_ptr);
+  void (*acquire_output_buffer)(struct VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
+                                void **host_ptr);
+  void (*acquire_rd_param_buffer)(struct VP9_COMP *cpi,
+                                  GPU_BLOCK_SIZE gpu_bsize, void **host_ptr);
+  void (*enc_sync_read)(struct VP9_COMP *cpi, int event_id);
+  void (*execute)(struct VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
+                  int sub_frame_idx);
+  void (*remove)(struct VP9_COMP *cpi);
+} VP9_EGPU;
 
 extern const BLOCK_SIZE vp9_actual_block_size_lookup[GPU_BLOCK_SIZES];
 extern const BLOCK_SIZE vp9_gpu_block_size_lookup[BLOCK_SIZES];
@@ -116,22 +124,25 @@ static INLINE int get_gpu_buffer_index(VP9_COMMON *const cm,
   return ((mi_row >> bsl) * group_stride) + (mi_col >> bsl);
 }
 
-int vp9_gpu_init(VP9_GPU *gpu);
+int vp9_egpu_init(struct VP9_COMP *cpi);
+
+void vp9_subframe_init(SubFrameInfo *subframe, const VP9_COMMON *cm, int row);
+int vp9_get_subframe_index(SubFrameInfo *subframe, const VP9_COMMON *cm,
+                           int mi_row);
 
 void vp9_gpu_set_mvinfo_offsets(VP9_COMMON *const cm, MACROBLOCKD *const xd,
                                 int mi_row, int mi_col, BLOCK_SIZE bsize);
 
-void vp9_gpu_fill_rd_parameters_common(struct VP9_COMP *cpi, MACROBLOCK *const x);
+void vp9_gpu_copy_output_subframe(struct VP9_COMP *cpi, MACROBLOCK *const x,
+                                  GPU_BLOCK_SIZE gpu_bsize,
+                                  GPU_OUTPUT *gpu_output,
+                                  SubFrameInfo *subframe);
 
-void vp9_gpu_fill_rd_parameters_block(struct VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize);
+void vp9_gpu_mv_compute(struct VP9_COMP *cpi, MACROBLOCK *const x);
 
-void vp9_gpu_fill_mv_input(struct VP9_COMP *cpi, const TileInfo * const tile);
-
-void vp9_gpu_copy_output(struct VP9_COMP *cpi, MACROBLOCK *const x,
-                         GPU_BLOCK_SIZE gpu_bsize, GPU_OUTPUT *gpu_output);
 
 #ifdef __cplusplus
 }  // extern "C"
 #endif
 
-#endif  // VP9_ENCODER_VP9_GPU_H_
+#endif  // VP9_ENCODER_VP9_EGPU_H_

@@ -32,21 +32,28 @@ static struct lookahead_entry *pop(struct lookahead_ctx *ctx,
 }
 
 
-void vp9_lookahead_destroy(struct lookahead_ctx *ctx) {
+void vp9_lookahead_destroy(VP9_COMMON *cm, struct lookahead_ctx *ctx) {
+  (void) cm;
   if (ctx) {
     if (ctx->buf) {
       unsigned int i;
 
-      for (i = 0; i < ctx->max_sz; i++)
-        vp9_free_frame_buffer(&ctx->buf[i].img);
+      for (i = 0; i < ctx->max_sz; i++) {
+#if CONFIG_GPU_COMPUTE
+        if (cm->use_gpu)
+          vp9_gpu_free_frame_buffer(cm, &ctx->buf[i].img);
+        else
+#endif
+          vp9_free_frame_buffer(&ctx->buf[i].img);
+      }
       free(ctx->buf);
     }
     free(ctx);
   }
 }
 
-
-struct lookahead_ctx *vp9_lookahead_init(unsigned int width,
+struct lookahead_ctx *vp9_lookahead_init(VP9_COMMON *cm,
+                                         unsigned int width,
                                          unsigned int height,
                                          unsigned int subsampling_x,
                                          unsigned int subsampling_y,
@@ -66,22 +73,46 @@ struct lookahead_ctx *vp9_lookahead_init(unsigned int width,
   ctx = calloc(1, sizeof(*ctx));
   if (ctx) {
     unsigned int i;
+    vpx_get_frame_buffer_cb_fn_t cb = NULL;
+    vpx_codec_frame_buffer_t *codec_frame_buffer = NULL;
+    void *cb_priv = NULL;
+
     ctx->max_sz = depth;
     ctx->buf = calloc(depth, sizeof(*ctx->buf));
     if (!ctx->buf)
       goto bail;
-    for (i = 0; i < depth; i++)
-      if (vp9_alloc_frame_buffer(&ctx->buf[i].img,
-                                 width, height, subsampling_x, subsampling_y,
+    for (i = 0; i < depth; i++) {
+#if CONFIG_GPU_COMPUTE
+      vpx_codec_frame_buffer_t raw_frame_buffer;
+      gpu_cb_priv gpu_priv = {cm, &ctx->buf[i].img};
+
+      if (cm->use_gpu) {
+        cb = vp9_gpu_get_frame_buffer;
+        codec_frame_buffer = &raw_frame_buffer;
+        cb_priv = &gpu_priv;
+      }
 #if CONFIG_VP9_HIGHBITDEPTH
-                                 use_highbitdepth,
+      // gpu kernels for now do not support higher bit depths.
+      assert(cm->use_highbitdepth == 0);
 #endif
-                                 VP9_ENC_BORDER_IN_PIXELS))
-        goto bail;
+#endif
+      if (&ctx->buf[i].img) {
+        vp9_free_frame_buffer(&ctx->buf[i].img);
+        if (vp9_realloc_frame_buffer(&ctx->buf[i].img, width, height,
+                                     subsampling_x, subsampling_y,
+#if CONFIG_VP9_HIGHBITDEPTH
+                                     cm->use_highbitdepth,
+#endif
+                                     VP9_ENC_BORDER_IN_PIXELS,
+                                     codec_frame_buffer, cb, cb_priv)) {
+          goto bail;
+        }
+      }
+    }
   }
   return ctx;
  bail:
-  vp9_lookahead_destroy(ctx);
+  vp9_lookahead_destroy(cm, ctx);
   return NULL;
 }
 

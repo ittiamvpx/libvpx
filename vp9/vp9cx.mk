@@ -95,10 +95,10 @@ VP9_CX_SRCS-yes += encoder/vp9_temporal_filter.h
 VP9_CX_SRCS-yes += encoder/vp9_mbgraph.c
 VP9_CX_SRCS-yes += encoder/vp9_mbgraph.h
 
-VP9_CX_SRCS-yes += encoder/vp9_gpu.c
-VP9_CX_SRCS-yes += encoder/vp9_gpu.h
-VP9_CX_SRCS-$(CONFIG_OPENCL) += encoder/opencl/vp9_opencl.c
-VP9_CX_SRCS-$(CONFIG_OPENCL) += encoder/opencl/vp9_opencl.h
+VP9_CX_SRCS-yes += encoder/vp9_egpu.c
+VP9_CX_SRCS-yes += encoder/vp9_egpu.h
+VP9_CX_SRCS-$(CONFIG_OPENCL) += encoder/opencl/vp9_eopencl.c
+VP9_CX_SRCS-$(CONFIG_OPENCL) += encoder/opencl/vp9_eopencl.h
 
 VP9_CX_SRCS-$(HAVE_AVX2) += encoder/x86/vp9_variance_impl_intrin_avx2.c
 VP9_CX_SRCS-$(HAVE_SSE2) += encoder/x86/vp9_sad4d_sse2.asm

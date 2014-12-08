@@ -467,14 +467,6 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
   PRED_BUFFER *this_mode_pred = NULL;
   int is_gpu_block = (bsize == BLOCK_32X32 || bsize == BLOCK_16X16 ||
       bsize == BLOCK_8X8);
-#if CONFIG_GPU_COMPUTE
-  GPU_BLOCK_SIZE gpu_bsize = get_gpu_block_size(bsize);
-  VP9_GPU *gpu = &cpi->gpu;
-  GPU_INPUT *gpu_input = (gpu_bsize == GPU_BLOCK_INVALID) ? NULL :
-      gpu->gpu_input[gpu_bsize] + get_gpu_buffer_index(cm, mi_row, mi_col, bsize);
-#else
-  GPU_INPUT *gpu_input = NULL;
-#endif
 
   if (cpi->sf.reuse_inter_pred_sby) {
     int i;
@@ -504,13 +496,13 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
                         EIGHTTAP : cm->interp_filter;
   mbmi->segment_id = segment_id;
 
-  // Only the block sizes computed on GPU should go thru data parallel processing
-  if (x->data_parallel_processing)
+  if (x->data_parallel_processing) {
+    // Only the block sizes computed on GPU should go thru data parallel processing
     assert(is_gpu_block);
-  // TODO(karthick-ittiam) : For GPU compute, segment_id of '0' is assumed.
-  // Need to add support for multiple segments.
-  if (cm->use_gpu && gpu_input)
+    // TODO(karthick-ittiam) : For GPU compute, segment_id of '0' is assumed.
+    // Need to add support for multiple segments.
     assert(segment_id == 0);
+  }
 
   for (ref_frame = LAST_FRAME; ref_frame <= ALTREF_FRAME; ++ref_frame) {
     PREDICTION_MODE this_mode;
@@ -587,7 +579,7 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
       }
     }
 
-    if (cm->use_gpu && gpu_input) {
+    if (x->data_parallel_processing) {
       // Only LAST_FRAME as reference frame is supported while GPU compute.
       assert(ref_frame == LAST_FRAME);
     }
@@ -601,7 +593,7 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
         continue;
 
       // For 32x32 GPU compute assumes ZEROMV is not required to be computed
-      if (cm->use_gpu && gpu_input && bsize == BLOCK_32X32 && this_mode == ZEROMV)
+      if (x->data_parallel_processing && bsize == BLOCK_32X32 && this_mode == ZEROMV)
         assert(!(cpi->sf.inter_mode_mask[bsize] & (1 << this_mode)));
 
       if (!(cpi->sf.inter_mode_mask[bsize] & (1 << this_mode)))
@@ -617,25 +609,11 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
       if (this_mode == NEWMV) {
         if (this_rd < (int64_t)(1 << num_pels_log2_lookup[bsize]))
           continue;
-#if CONFIG_GPU_COMPUTE
-        if (cm->use_gpu && gpu_input) {
-          GPU_OUTPUT *out_mv;
-          assert(cpi->sf.mv.subpel_force_stop == 1);
-          assert(cpi->sf.mv.subpel_iters_per_step == 1);
-          out_mv = cpi->gpu.gpu_output[gpu_bsize]
-              + get_gpu_buffer_index(cm, mi_row, mi_col, bsize);
-          x->pred_mv[ref_frame] = out_mv->mv;
-          // GPU compute assumes interp_filter as EIGHTTAP filter
-          assert(mbmi->interp_filter == EIGHTTAP);
+        if (!combined_motion_search(cpi, x, bsize, mi_row, mi_col,
+                                    &frame_mv[NEWMV][ref_frame], &rate_mv,
+                                    best_rd)) {
           continue;
-
-        } else
-#endif
-          if (!combined_motion_search(cpi, x, bsize, mi_row, mi_col,
-                                      &frame_mv[NEWMV][ref_frame], &rate_mv,
-                                      best_rd)) {
-            continue;
-          }
+        }
       }
 
       if (!x->data_parallel_processing &&
@@ -773,11 +751,9 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
     // we are done.
     if (best_rd < INT64_MAX)
       break;
-    if (cm->use_gpu && gpu_input)
-      break;
   }
 
-  if (x->data_parallel_processing && !gpu_input) {
+  if (x->data_parallel_processing) {
     xd->gpu_mvinfo[bsize]->best_rd = best_rd;
     xd->gpu_mvinfo[bsize]->returnrate = *returnrate;
     xd->gpu_mvinfo[bsize]->returndistortion = *returndistortion;
@@ -789,7 +765,6 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
     xd->gpu_mvinfo[bsize]->segment_id = segment_id;
     xd->gpu_mvinfo[bsize]->mv[0].as_int =
         frame_mv[best_mode][best_ref_frame].as_int;
-
     return ;
   }
 

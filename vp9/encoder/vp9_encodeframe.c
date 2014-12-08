@@ -2887,7 +2887,7 @@ static void nonrd_pick_partition(VP9_COMP *cpi, MACROBLOCK *const x,
         sum_rd = INT64_MAX;
     }
 
-    for (i = 0; i < 4 && (sum_rd < best_rd || x->data_parallel_processing); ++i) {
+    for (i = 0; i < 4 && sum_rd < best_rd; ++i) {
       const int x_idx = (i & 1) * ms;
       const int y_idx = (i >> 1) * ms;
 
@@ -3322,6 +3322,29 @@ static void encode_nonrd_sb_row(VP9_COMP *cpi, MACROBLOCK *const x,
   vpx_memset(&xd->left_context, 0, sizeof(xd->left_context));
   vpx_memset(xd->left_seg_context, 0, sizeof(xd->left_seg_context));
 
+#if CONFIG_GPU_COMPUTE
+  // when gpu is enabled, before encoding the frame make sure all the
+  // dependencies are met
+  if (cm->use_gpu && !x->data_parallel_processing) {
+    VP9_EGPU *egpu = &cpi->egpu;
+    GPU_BLOCK_SIZE gpu_bsize;
+    SubFrameInfo subframe;
+    int subframe_idx;
+
+    subframe_idx = vp9_get_subframe_index(&subframe, cm, mi_row);
+
+    if (mi_row == subframe.mi_row_start) {
+      egpu->enc_sync_read(cpi, subframe_idx);
+      for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+        egpu->acquire_output_buffer(cpi, gpu_bsize,
+                                    (void **)&egpu->gpu_output[gpu_bsize]);
+        vp9_gpu_copy_output_subframe(cpi, x, gpu_bsize,
+                                     cpi->egpu.gpu_output[gpu_bsize], &subframe);
+      }
+    }
+  }
+#endif
+
   // Code each SB in the row
   for (mi_col = tile->mi_col_start; mi_col < tile->mi_col_end;
        mi_col += MI_BLOCK_SIZE) {
@@ -3546,72 +3569,37 @@ static INLINE void restore_frame_counts(VP9_COMP *cpi, MACROBLOCK *x_thread) {
                sizeof(x_thread->rd.tx_select_diff));
 }
 
-static void vp9_gpu_mv_compute(VP9_COMP *cpi, MACROBLOCK *const x) {
-  TOKENEXTRA *tok = cpi->tok;
-  VP9_COMMON *const cm = &cpi->common;
+static void encode_sb_rows(VP9_COMP *cpi, MACROBLOCK *const x,
+                           int mi_row_start, int mi_row_end,
+                           int mi_row_step) {
+  VP9_COMMON * cm = &cpi->common;
   const int tile_cols = 1 << cm->log2_tile_cols;
-  const int tile_rows = 1 << cm->log2_tile_rows;
   int tile_col, tile_row;
-#if CONFIG_GPU_COMPUTE
-  VP9_GPU * const gpu = &cpi->gpu;
-  const YV12_BUFFER_CONFIG *reference_frame = get_ref_frame_buffer(cpi,
-                                                                   LAST_FRAME);
-  const YV12_BUFFER_CONFIG *current_frame = cpi->Source;
-  GPU_BLOCK_SIZE gpu_bsize;
-#endif
+  int mi_row;
+  TileInfo tile;
+  TOKENEXTRA *tok = cpi->tok;
 
-  x->data_parallel_processing = 1;
-
-#if CONFIG_GPU_COMPUTE
-  for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
-    gpu->gpu_input[gpu_bsize] = gpu->acquire_input_buffer(cpi, gpu_bsize);
-  }
-  vp9_gpu_fill_rd_parameters_common(cpi, x);
-  for (tile_row = 0; tile_row < tile_rows; ++tile_row) {
+  for (mi_row = mi_row_start; mi_row < mi_row_end; mi_row += mi_row_step) {
+    const int sb_row = mi_row >> MI_BLOCK_SIZE_LOG2;
+    tile_row = vp9_get_tile_row_index(&tile, cm, mi_row);
     for (tile_col = 0; tile_col < tile_cols; ++tile_col) {
-      TileInfo tile;
-
-      vp9_tile_init(&tile, cm, tile_row, tile_col);
-      vp9_gpu_fill_mv_input(cpi, &tile);
-    }
-  }
-  for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
-    vp9_gpu_fill_rd_parameters_block(cpi, gpu_bsize);
-    cpi->gpu.gpu_output[gpu_bsize] = gpu->execute(cpi,
-                                                  reference_frame->buffer_alloc,
-                                                  current_frame->buffer_alloc,
-                                                  gpu_bsize);
-  }
-
-#endif
-
-
-  for (tile_row = 0; tile_row < tile_rows; ++tile_row) {
-    for (tile_col = 0; tile_col < tile_cols; ++tile_col) {
-      TileInfo tile;
-      int mi_row;
-      vp9_tile_init(&tile, cm, tile_row, tile_col);
-      for (mi_row = tile.mi_row_start; mi_row < tile.mi_row_end; mi_row +=
-          MI_BLOCK_SIZE) {
+      vp9_tile_set_col(&tile, cm, tile_col);
+      get_start_tok(cpi, tile_row, tile_col, mi_row, &tok);
+      cpi->tplist[sb_row][tile_row][tile_col].start = tok;
+      if (cpi->sf.use_nonrd_pick_mode && !frame_is_intra_only(cm))
         encode_nonrd_sb_row(cpi, x, &tile, mi_row, &tok);
-      }
+      else
+        encode_rd_sb_row(cpi, x, &tile, mi_row, &tok);
+      cpi->tplist[sb_row][tile_row][tile_col].stop = tok;
+      assert(tok - cpi->tplist[sb_row][tile_row][0].start <=
+             get_token_alloc(MI_BLOCK_SIZE >> 1, cm->mb_cols));
     }
   }
-  x->data_parallel_processing = 0;
-#if CONFIG_GPU_COMPUTE
-  for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
-    vp9_gpu_copy_output(cpi, x, gpu_bsize, cpi->gpu.gpu_output[gpu_bsize]);
-  }
-#endif
 }
 
 static void encode_tiles(VP9_COMP *cpi) {
   VP9_COMMON *const cm = &cpi->common;
   MACROBLOCK *const x = &cpi->mb;
-  const int tile_cols = 1 << cm->log2_tile_cols;
-  const int tile_rows = 1 << cm->log2_tile_rows;
-  int tile_col, tile_row;
-  TOKENEXTRA *tok;
 
   // Call the Data parallel MV compute (to be performed by GPU)
   if (cm->use_gpu &&
@@ -3619,31 +3607,17 @@ static void encode_tiles(VP9_COMP *cpi) {
     // TODO(ram-ittiam): Remove this assert, after adding appropriate sanity
     // checks for use_gpu setting
     assert(cm->prev_mi != NULL);
-
+#if CONFIG_GPU_COMPUTE
     vp9_gpu_mv_compute(cpi, x);
+#else
+    x->data_parallel_processing = 1;
+    encode_sb_rows(cpi, x, 0, cm->mi_rows, MI_BLOCK_SIZE);
+    x->data_parallel_processing = 0;
+#endif
   }
-  for (tile_row = 0; tile_row < tile_rows; ++tile_row) {
-    for (tile_col = 0; tile_col < tile_cols; ++tile_col) {
-      TileInfo tile;
-      int mi_row;
+  // encode SB
+  encode_sb_rows(cpi, x, 0, cm->mi_rows, MI_BLOCK_SIZE);
 
-      vp9_tile_init(&tile, cm, tile_row, tile_col);
-
-      for (mi_row = tile.mi_row_start; mi_row < tile.mi_row_end;
-           mi_row += MI_BLOCK_SIZE) {
-        const int sb_row = mi_row >> MI_BLOCK_SIZE_LOG2;
-        get_start_tok(cpi, tile_row, tile_col, mi_row, &tok);
-        cpi->tplist[sb_row][tile_row][tile_col].start = tok;
-        if (cpi->sf.use_nonrd_pick_mode && !frame_is_intra_only(cm))
-          encode_nonrd_sb_row(cpi, x, &tile, mi_row, &tok);
-        else
-          encode_rd_sb_row(cpi, x, &tile, mi_row, &tok);
-        cpi->tplist[sb_row][tile_row][tile_col].stop = tok;
-        assert(tok - cpi->tplist[sb_row][tile_row][0].start
-               <= get_token_alloc(MI_BLOCK_SIZE >> 1, cm->mb_cols));
-      }
-    }
-  }
   restore_frame_counts(cpi, x);
 }
 
@@ -3661,6 +3635,17 @@ void encode_tiles_mt(VP9_COMP *cpi) {
 
   // Initialize cur_sb_col to -1 for all SB rows.
   vpx_memset(cpi->cur_sb_col, -1, (sizeof(*cpi->cur_sb_col) * cm->sb_rows));
+
+#if CONFIG_GPU_COMPUTE
+  // Call the Data parallel MV compute (to be performed by GPU)
+  if (cm->use_gpu &&
+      cpi->sf.use_nonrd_pick_mode && !frame_is_intra_only(cm)) {
+    // TODO(ram-ittiam): Remove this assert, after adding appropriate sanity
+    // checks for use_gpu setting
+    assert(cm->prev_mi != NULL);
+    vp9_gpu_mv_compute(cpi, &cpi->mb);
+  }
+#endif
 
   for (thread_id = 0; thread_id < cpi->max_threads ; ++thread_id) {
     VP9Worker *const worker = &cpi->enc_thread_hndl[thread_id];
@@ -3690,7 +3675,7 @@ void encode_tiles_mt(VP9_COMP *cpi) {
   // Wait till all rows are finished
   for (thread_id = 0; thread_id < cpi->max_threads; ++thread_id) {
     VP9Worker *const worker = &cpi->enc_thread_hndl[thread_id];
-    thread_context *const row_data = (thread_context*)worker->data1;
+    thread_context *const row_data = (thread_context *)worker->data1;
     MACROBLOCK *const x = &row_data->mb;
 
     winterface->sync(worker);
@@ -3703,15 +3688,12 @@ void encode_tiles_mt(VP9_COMP *cpi) {
 
 int encoding_thread_process(thread_context *const thread_ctxt, void* data2) {
   VP9_COMP *cpi = thread_ctxt->cpi;
+#if !CONFIG_GPU_COMPUTE
   const VP9_COMMON *const cm = &cpi->common;
+#endif
   MACROBLOCK *const x = &thread_ctxt->mb;
   MACROBLOCKD *const xd = &x->e_mbd;
   SPEED_FEATURES *const sf = &cpi->sf;
-  const int tile_cols = 1 << cm->log2_tile_cols;
-  TOKENEXTRA *tok = NULL;
-  int tile_col, tile_row;
-  TileInfo tile;
-  int mi_row;
 
   (void)data2;
   // initialize mb in thread context
@@ -3733,53 +3715,22 @@ int encoding_thread_process(thread_context *const thread_ctxt, void* data2) {
     }
     vp9_zero(x->zcoeff_blk);
   }
+#if !CONFIG_GPU_COMPUTE
   // Call the Data parallel MV compute (to be performed by GPU)
   if (cm->use_gpu &&
       cpi->sf.use_nonrd_pick_mode && !frame_is_intra_only(cm)) {
     // TODO(ram-ittiam): Remove this assert, after adding appropriate sanity
     // checks for use_gpu setting
     assert(cm->prev_mi != NULL);
-
-    // TODO(karthick-ittiam): Add support for multithreading in GPU compute mode
-#if CONFIG_GPU_COMPUTE
-    assert(0);
-#endif
     x->data_parallel_processing = 1;
-    for (mi_row = thread_ctxt->mi_row_start; mi_row < thread_ctxt->mi_row_end;
-        mi_row += thread_ctxt->mi_row_step) {
-      const int sb_row = mi_row >> MI_BLOCK_SIZE_LOG2;
-      tile_row = vp9_get_tile_row_index(&tile, cm, mi_row);
-      for (tile_col = 0; tile_col < tile_cols; ++tile_col) {
-        vp9_tile_set_col(&tile, cm, tile_col);
-        get_start_tok(cpi, tile_row, tile_col, mi_row, &tok);
-        cpi->tplist[sb_row][tile_row][tile_col].start = tok;
-        encode_nonrd_sb_row(cpi, x, &tile, mi_row, &tok);
-        cpi->tplist[sb_row][tile_row][tile_col].stop = tok;
-        assert(tok - cpi->tplist[sb_row][tile_row][0].start <=
-               get_token_alloc(MI_BLOCK_SIZE >> 1, cm->mb_cols));
-      }
-    }
+    encode_sb_rows(cpi, x, thread_ctxt->mi_row_start, thread_ctxt->mi_row_end,
+                   thread_ctxt->mi_row_step);
     x->data_parallel_processing = 0;
   }
+#endif
+  encode_sb_rows(cpi, x, thread_ctxt->mi_row_start, thread_ctxt->mi_row_end,
+                 thread_ctxt->mi_row_step);
 
-  // encode
-  for (mi_row = thread_ctxt->mi_row_start; mi_row < thread_ctxt->mi_row_end;
-      mi_row += thread_ctxt->mi_row_step) {
-    const int sb_row = mi_row >> MI_BLOCK_SIZE_LOG2;
-    tile_row = vp9_get_tile_row_index(&tile, cm, mi_row);
-    for (tile_col = 0; tile_col < tile_cols; ++tile_col) {
-      vp9_tile_set_col(&tile, cm, tile_col);
-      get_start_tok(cpi, tile_row, tile_col, mi_row, &tok);
-      cpi->tplist[sb_row][tile_row][tile_col].start = tok;
-      if (cpi->sf.use_nonrd_pick_mode && !frame_is_intra_only(cm))
-        encode_nonrd_sb_row(cpi, x, &tile, mi_row, &tok);
-      else
-        encode_rd_sb_row(cpi, x, &tile, mi_row, &tok);
-      cpi->tplist[sb_row][tile_row][tile_col].stop = tok;
-      assert(tok - cpi->tplist[sb_row][tile_row][0].start <=
-             get_token_alloc(MI_BLOCK_SIZE >> 1, cm->mb_cols));
-    }
-  }
   return 0;
 }
 

@@ -36,7 +36,7 @@
 #include "vp9/encoder/vp9_encodeframe.h"
 #include "vp9/encoder/vp9_encodemv.h"
 #include "vp9/encoder/vp9_firstpass.h"
-#include "vp9/encoder/vp9_gpu.h"
+#include "vp9/encoder/vp9_egpu.h"
 #include "vp9/encoder/vp9_mbgraph.h"
 #include "vp9/encoder/vp9_encoder.h"
 #include "vp9/encoder/vp9_picklpf.h"
@@ -205,11 +205,11 @@ static void dealloc_compressor_data(VP9_COMP *cpi) {
   vp9_free_frame_buffer(&cpi->scaled_source);
   vp9_free_frame_buffer(&cpi->scaled_last_source);
   vp9_free_frame_buffer(&cpi->alt_ref_buffer);
-  vp9_lookahead_destroy(cpi->lookahead);
+  vp9_lookahead_destroy(cm, cpi->lookahead);
 
 #if CONFIG_GPU_COMPUTE
     if (cm->use_gpu)
-      cpi->gpu.free_buffers(cpi);
+      cpi->egpu.free_buffers(cpi);
 #endif
 
   vpx_free(cpi->tok);
@@ -454,7 +454,7 @@ static void alloc_raw_frame_buffers(VP9_COMP *cpi) {
   VP9_COMMON *cm = &cpi->common;
   const VP9EncoderConfig *oxcf = &cpi->oxcf;
 
-  cpi->lookahead = vp9_lookahead_init(oxcf->width, oxcf->height,
+  cpi->lookahead = vp9_lookahead_init(cm, oxcf->width, oxcf->height,
                                       cm->subsampling_x, cm->subsampling_y,
 #if CONFIG_VP9_HIGHBITDEPTH
                                       cm->use_highbitdepth,
@@ -617,9 +617,12 @@ static void init_config(struct VP9_COMP *cpi, VP9EncoderConfig *oxcf) {
     // TODO(karthick-ittiam): If the GPU initialization fails, the calling
     // function signals it as memory allocation error, instead of the error
     // signaled below. This needs to be fixed.
-    if (vp9_gpu_init(&cpi->gpu))
+    if (vp9_gpu_init(cm))
       vpx_internal_error(&cm->error, VPX_CODEC_ERROR,
                          "GPU initialization failed");
+    if (vp9_egpu_init(cpi))
+      vpx_internal_error(&cm->error, VPX_CODEC_ERROR,
+                         "EGPU initialization failed");
   }
 #endif
   // Spatial scalability.
@@ -1228,7 +1231,8 @@ void vp9_remove_compressor(VP9_COMP *cpi) {
 #endif
 #if CONFIG_GPU_COMPUTE
   if (cpi->common.use_gpu) {
-    cpi->gpu.remove(cpi);
+    cpi->egpu.remove(cpi);
+    cpi->common.gpu.remove(&cpi->common);
   }
 #endif
 
@@ -2495,7 +2499,7 @@ static void check_initial_width(VP9_COMP *cpi, int subsampling_x,
     alloc_util_frame_buffers(cpi);
 #if CONFIG_GPU_COMPUTE
     if (cm->use_gpu)
-      cpi->gpu.alloc_buffers(cpi);
+      cpi->egpu.alloc_buffers(cpi);
 #endif
 
     init_motion_estimation(cpi);

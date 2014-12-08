@@ -12,13 +12,16 @@
 #include "vpx_mem/vpx_mem.h"
 
 #include "vp9/common/vp9_mvref_common.h"
+#include "vp9/common/vp9_alloccommon.h"
+#include "vp9/common/vp9_onyxc_int.h"
+#if CONFIG_OPENCL
+#include "vp9/common/opencl/vp9_opencl.h"
+#endif
 
 #include "vp9/encoder/vp9_encoder.h"
 #include "vp9/encoder/vp9_encodeframe.h"
-#include "vp9/encoder/vp9_gpu.h"
-
 #if CONFIG_OPENCL
-#include "vp9/encoder/opencl/vp9_opencl.h"
+#include "vp9/encoder/opencl/vp9_eopencl.h"
 #endif
 
 const BLOCK_SIZE vp9_actual_block_size_lookup[GPU_BLOCK_SIZES] = {
@@ -53,67 +56,92 @@ void vp9_gpu_set_mvinfo_offsets(VP9_COMMON *const cm, MACROBLOCKD *const xd,
 }
 
 #if CONFIG_GPU_COMPUTE
-int vp9_gpu_init(VP9_GPU *gpu) {
+
+int vp9_egpu_init(VP9_COMP *cpi) {
 #if CONFIG_OPENCL
-  return vp9_opencl_init(gpu);
+  return vp9_eopencl_init(cpi);
 #else
   return 1;
 #endif
 }
 
-void vp9_gpu_fill_rd_parameters_common(VP9_COMP *cpi, MACROBLOCK *const x)
-{
-  VP9_GPU *gpu = &cpi->gpu;
+static int get_subframe_offset(int idx, int mi_rows, int sb_rows) {
+  const int offset = ((idx * sb_rows) / MAX_SUB_FRAMES) << MI_BLOCK_SIZE_LOG2;
+  return MIN(offset, mi_rows);
+}
+
+void vp9_subframe_init(SubFrameInfo *subframe, const VP9_COMMON *cm, int idx) {
+  subframe->mi_row_start = get_subframe_offset(idx, cm->mi_rows, cm->sb_rows);
+  subframe->mi_row_end = get_subframe_offset(idx + 1, cm->mi_rows, cm->sb_rows);
+}
+
+int vp9_get_subframe_index(SubFrameInfo *subframe, const VP9_COMMON *cm,
+                           int mi_row) {
+  int idx;
+
+  for (idx = 0; idx < MAX_SUB_FRAMES; ++idx) {
+    vp9_subframe_init(subframe, cm, idx);
+    if (mi_row >= subframe->mi_row_start && mi_row < subframe->mi_row_end) {
+      break;
+    }
+  }
+  assert(idx < MAX_SUB_FRAMES);
+  return idx;
+}
+
+static void vp9_gpu_fill_rd_parameters(VP9_COMP *cpi, MACROBLOCK *const x) {
+  VP9_EGPU *egpu = &cpi->egpu;
   MACROBLOCKD *const xd = &x->e_mbd;
   struct macroblockd_plane *const pd = &xd->plane[0];
-  GPU_RD_PARAMETERS *gpu_rd_parameters = gpu->acquire_rd_parameters(cpi);
+  GPU_BLOCK_SIZE gpu_bsize;
   int i;
 
-  gpu_rd_parameters->rd_mult = cpi->rd.RDMULT;
-  gpu_rd_parameters->rd_div = cpi->rd.RDDIV;
-  for (i = 0; i < SWITCHABLE_FILTERS; i++)
-    gpu_rd_parameters->switchable_interp_costs[i] =
-        cpi->switchable_interp_costs[SWITCHABLE_FILTERS][i];
-  for (i = 0; i < INTER_MODE_CONTEXTS; i++) {
-    gpu_rd_parameters->inter_mode_cost[i][0] =
-        cpi->inter_mode_cost[i][INTER_OFFSET(ZEROMV)];
-    gpu_rd_parameters->inter_mode_cost[i][1] =
-        cpi->inter_mode_cost[i][INTER_OFFSET(NEWMV)];
-  }
-  gpu_rd_parameters->tx_mode = cpi->common.tx_mode;
-  gpu_rd_parameters->dc_quant = pd->dequant[0];
-  gpu_rd_parameters->ac_quant = pd->dequant[1];
-  vpx_memcpy(gpu_rd_parameters->nmvsadcost[0], cpi->mb.nmvsadcost[0] - MV_MAX,
-             sizeof(gpu_rd_parameters->nmvsadcost[0]));
-  vpx_memcpy(gpu_rd_parameters->nmvsadcost[1], cpi->mb.nmvsadcost[1] - MV_MAX,
-             sizeof(gpu_rd_parameters->nmvsadcost[1]));
-  vpx_memcpy(gpu_rd_parameters->mvcost[0], cpi->mb.mvcost[0] - MV_MAX,
-             sizeof(gpu_rd_parameters->mvcost[0]));
-  vpx_memcpy(gpu_rd_parameters->mvcost[1], cpi->mb.mvcost[1] - MV_MAX,
-             sizeof(gpu_rd_parameters->mvcost[1]));
-  gpu_rd_parameters->sad_per_bit = cpi->mb.sadperbit16;
-  gpu_rd_parameters->error_per_bit = cpi->mb.errorperbit;
-  for(i = 0; i < MV_JOINTS; i++) {
-    gpu_rd_parameters->nmvjointcost[i] = x->nmvjointcost[i];
+  for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+    BLOCK_SIZE bsize = get_actual_block_size(gpu_bsize);
+    GPU_RD_PARAMETERS *rd_param_ptr;
+
+    egpu->acquire_rd_param_buffer(cpi, gpu_bsize, (void **)&rd_param_ptr);
+
+    rd_param_ptr->rd_mult = cpi->rd.RDMULT;
+    rd_param_ptr->rd_div = cpi->rd.RDDIV;
+    for (i = 0; i < SWITCHABLE_FILTERS; i++)
+      rd_param_ptr->switchable_interp_costs[i] =
+          cpi->switchable_interp_costs[SWITCHABLE_FILTERS][i];
+    for (i = 0; i < INTER_MODE_CONTEXTS; i++) {
+      rd_param_ptr->inter_mode_cost[i][0] =
+          cpi->inter_mode_cost[i][INTER_OFFSET(ZEROMV)];
+      rd_param_ptr->inter_mode_cost[i][1] =
+          cpi->inter_mode_cost[i][INTER_OFFSET(NEWMV)];
+    }
+    rd_param_ptr->tx_mode = cpi->common.tx_mode;
+    rd_param_ptr->dc_quant = pd->dequant[0];
+    rd_param_ptr->ac_quant = pd->dequant[1];
+    vpx_memcpy(rd_param_ptr->nmvsadcost[0], cpi->mb.nmvsadcost[0] - MV_MAX,
+               sizeof(rd_param_ptr->nmvsadcost[0]));
+    vpx_memcpy(rd_param_ptr->nmvsadcost[1], cpi->mb.nmvsadcost[1] - MV_MAX,
+               sizeof(rd_param_ptr->nmvsadcost[1]));
+    vpx_memcpy(rd_param_ptr->mvcost[0], cpi->mb.mvcost[0] - MV_MAX,
+               sizeof(rd_param_ptr->mvcost[0]));
+    vpx_memcpy(rd_param_ptr->mvcost[1], cpi->mb.mvcost[1] - MV_MAX,
+               sizeof(rd_param_ptr->mvcost[1]));
+    rd_param_ptr->sad_per_bit = cpi->mb.sadperbit16;
+    rd_param_ptr->error_per_bit = cpi->mb.errorperbit;
+    for(i = 0; i < MV_JOINTS; i++) {
+      rd_param_ptr->nmvjointcost[i] = x->nmvjointcost[i];
+    }
+
+    // assuming segmentation is disabled and segement id for the frame is '0'
+    vpx_memcpy(rd_param_ptr->threshes, cpi->rd.threshes[0][bsize],
+               sizeof(cpi->rd.threshes[0][bsize]));
+    rd_param_ptr->thresh_fact_newmv = cpi->rd.thresh_freq_fact[bsize][NEWMV];
   }
 }
 
-void vp9_gpu_fill_rd_parameters_block(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize)
-{
-  VP9_GPU *gpu = &cpi->gpu;
-  BLOCK_SIZE bsize = get_actual_block_size(gpu_bsize);
-  GPU_RD_PARAMETERS *gpu_rd_parameters = gpu->acquire_rd_parameters(cpi);
-  // Assuming a segment ID of 0 here
-  vpx_memcpy(gpu_rd_parameters->threshes, cpi->rd.threshes[0][bsize],
-             sizeof(cpi->rd.threshes[0][bsize]));
-  gpu_rd_parameters->thresh_fact_newmv = cpi->rd.thresh_freq_fact[bsize][NEWMV];
-}
-
-void vp9_gpu_fill_mv_input(VP9_COMP *cpi, const TileInfo * const tile) {
+static void vp9_gpu_fill_mv_input(VP9_COMP *cpi, const TileInfo * const tile) {
   SPEED_FEATURES *const sf = &cpi->sf;
   int mi_row, mi_col;
   int mi_width, mi_height;
-  VP9_GPU *gpu = &cpi->gpu;
+  VP9_EGPU *egpu = &cpi->egpu;
   MACROBLOCK *const x = &cpi->mb;
   VP9_COMMON *const cm = &cpi->common;
   MACROBLOCKD *const xd = &x->e_mbd;
@@ -127,7 +155,9 @@ void vp9_gpu_fill_mv_input(VP9_COMP *cpi, const TileInfo * const tile) {
     const BLOCK_SIZE bsize = get_actual_block_size(gpu_bsize);
     const int mi_row_step = num_8x8_blocks_high_lookup[bsize];
     const int mi_col_step = num_8x8_blocks_wide_lookup[bsize];
-    gpu_input_base        = gpu->acquire_input_buffer(cpi, gpu_bsize);
+
+    egpu->acquire_input_buffer(cpi, gpu_bsize, (void **)&gpu_input_base);
+    cpi->egpu.gpu_input[gpu_bsize] = gpu_input_base;
 
     for (mi_row = tile->mi_row_start; mi_row < tile->mi_row_end; mi_row +=
         mi_row_step) {
@@ -184,24 +214,30 @@ void vp9_gpu_fill_mv_input(VP9_COMP *cpi, const TileInfo * const tile) {
           gpu_input->filter_type = SWITCHABLE;
         else
           gpu_input->filter_type = EIGHTTAP;
-
-
       }
     }
   }
+
   for (mi_row = tile->mi_row_start; mi_row < tile->mi_row_end; mi_row +=
       MI_BLOCK_SIZE) {
     for (mi_col = tile->mi_col_start; mi_col < tile->mi_col_end; mi_col +=
         MI_BLOCK_SIZE) {
       const int is_static_area = is_background(cpi, tile, mi_row, mi_col);
+      const int sb_row_index = mi_row / MI_SIZE;
+      const int sb_col_index = mi_col / MI_SIZE;
+      const int sb_index = (cm->sb_cols * sb_row_index + sb_col_index);
+
+      cm->is_background_map[sb_index] = is_static_area;
 
       if (!sf->partition_check && is_static_area) {
         for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; ++gpu_bsize) {
           const BLOCK_SIZE bsize = get_actual_block_size(gpu_bsize);
-          GPU_INPUT *gpu_input_base = gpu->acquire_input_buffer(cpi, gpu_bsize);
+          GPU_INPUT *gpu_input_base;
           const int mi_row_step = num_8x8_blocks_high_lookup[bsize];
           const int mi_col_step = num_8x8_blocks_wide_lookup[bsize];
           int block_row, block_col;
+
+          egpu->acquire_input_buffer(cpi, gpu_bsize, (void **)&gpu_input_base);
 
           for (block_row = 0; block_row < MI_BLOCK_SIZE; block_row +=
               mi_row_step) {
@@ -228,13 +264,15 @@ void vp9_gpu_fill_mv_input(VP9_COMP *cpi, const TileInfo * const tile) {
       }
     }
   }
+
 }
 
 // TODO(karthick-ittiam) : Ideally GPU_OUTPUT and GPU_MV_INFO structs should be
 // merged/unified and this copy should be removed altogether
-void vp9_gpu_copy_output(VP9_COMP *cpi, MACROBLOCK *const x,
-                         GPU_BLOCK_SIZE gpu_bsize, GPU_OUTPUT *gpu_output)
-{
+void vp9_gpu_copy_output_subframe(VP9_COMP *cpi, MACROBLOCK *const x,
+                                  GPU_BLOCK_SIZE gpu_bsize,
+                                  GPU_OUTPUT *gpu_output,
+                                  SubFrameInfo *subframe) {
   VP9_COMMON *const cm = &cpi->common;
   MACROBLOCKD *const xd = &x->e_mbd;
   const BLOCK_SIZE bsize = get_actual_block_size(gpu_bsize);
@@ -242,7 +280,8 @@ void vp9_gpu_copy_output(VP9_COMP *cpi, MACROBLOCK *const x,
   const int mi_row_step = num_8x8_blocks_high_lookup[bsize];
   const int mi_col_step = num_8x8_blocks_wide_lookup[bsize];
 
-  for (mi_row = 0; mi_row < cm->mi_rows; mi_row += mi_row_step) {
+  for (mi_row = subframe->mi_row_start; mi_row < subframe->mi_row_end;
+       mi_row += mi_row_step) {
     for (mi_col = 0; mi_col < cm->mi_cols; mi_col += mi_col_step) {
       const int idx = get_gpu_buffer_index(cm, mi_row, mi_col, bsize);
       GPU_OUTPUT *const gpu_output_block = gpu_output + idx;
@@ -276,4 +315,40 @@ void vp9_gpu_copy_output(VP9_COMP *cpi, MACROBLOCK *const x,
     }
   }
 }
+
+void vp9_gpu_mv_compute(VP9_COMP *cpi, MACROBLOCK *const x) {
+  VP9_COMMON *const cm = &cpi->common;
+  const int tile_cols = 1 << cm->log2_tile_cols;
+  int tile_col, tile_row;
+  const int tile_rows = 1 << cm->log2_tile_rows;
+  VP9_EGPU * const egpu = &cpi->egpu;
+  GPU_BLOCK_SIZE gpu_bsize;
+  int subframe_index;
+
+  x->data_parallel_processing = 1;
+
+  // fill rd param info
+  vp9_gpu_fill_rd_parameters(cpi, x);
+  // fill mv info
+  for (tile_row = 0; tile_row < tile_rows; ++tile_row) {
+    for (tile_col = 0; tile_col < tile_cols; ++tile_col) {
+      TileInfo tile;
+
+      vp9_tile_init(&tile, cm, tile_row, tile_col);
+      vp9_gpu_fill_mv_input(cpi, &tile);
+    }
+  }
+  // enqueue kernels for gpu
+  for (subframe_index = 0; subframe_index < MAX_SUB_FRAMES; subframe_index++) {
+    for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+      egpu->execute(cpi, gpu_bsize, subframe_index);
+    }
+  }
+  // re-map source and reference pointers before starting cpu side processing
+  vp9_acquire_frame_buffer(cm, cpi->Source);
+  vp9_acquire_frame_buffer(cm, get_ref_frame_buffer(cpi, LAST_FRAME));
+
+  x->data_parallel_processing = 0;
+}
+
 #endif
