@@ -74,7 +74,7 @@ static void vp9_opencl_acquire_frame_buffers(VP9_COMMON *cm, void **opencl_mem,
 
   if (*mapped_pointer == NULL) {
     *mapped_pointer =
-        clEnqueueMapBuffer(opencl->cmd_queue, *opencl_mem, CL_TRUE,
+        clEnqueueMapBuffer(opencl->cmd_queue_memory, *opencl_mem, CL_TRUE,
                            CL_MAP_READ | CL_MAP_WRITE, 0, size, 0,
                            NULL, NULL, &status);
     if (status != CL_SUCCESS)
@@ -92,6 +92,9 @@ static void vp9_opencl_remove(VP9_COMMON *cm) {
   cl_int status;
 
   status = clReleaseCommandQueue(opencl->cmd_queue);
+  if (status != CL_SUCCESS)
+    goto fail;
+  status = clReleaseCommandQueue(opencl->cmd_queue_memory);
   if (status != CL_SUCCESS)
     goto fail;
 
@@ -154,13 +157,18 @@ int vp9_opencl_init(VP9_COMMON *cm) {
   if (status != CL_SUCCESS || opencl->context == NULL)
     goto fail;
 
-  // Create a command queue for the device
+  // Create command queues for the device
+  opencl->cmd_queue_memory = clCreateCommandQueue(opencl->context, device,
+                                                  command_queue_properties,
+                                                  &status);
+  if (status != CL_SUCCESS || opencl->cmd_queue_memory == NULL)
+    goto fail;
+
   opencl->cmd_queue = clCreateCommandQueue(opencl->context, device,
                                            command_queue_properties,
                                            &status);
   if (status != CL_SUCCESS || opencl->cmd_queue == NULL)
     goto fail;
-
   return 0;
 
 fail:

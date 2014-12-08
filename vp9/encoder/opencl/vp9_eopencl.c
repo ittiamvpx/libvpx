@@ -262,7 +262,7 @@ static int vp9_opencl_acquire_buffer(VP9_COMP *cpi, cl_mem *opencl_mem,
 
   if (*mapped_pointer == NULL) {
     *mapped_pointer =
-        clEnqueueMapBuffer(opencl->cmd_queue, *opencl_mem, CL_TRUE,
+        clEnqueueMapBuffer(opencl->cmd_queue_memory, *opencl_mem, CL_TRUE,
                            CL_MAP_READ | CL_MAP_WRITE, 0, size, 0, NULL, NULL,
                            &status);
     if (status != CL_SUCCESS)

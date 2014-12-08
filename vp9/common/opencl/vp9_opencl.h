@@ -29,6 +29,7 @@ typedef struct opencl_buffer {
 typedef struct VP9_OPENCL {
   cl_device_id device;
   cl_context context;
+  cl_command_queue cmd_queue_memory;
   cl_command_queue cmd_queue;
 } VP9_OPENCL;
 
