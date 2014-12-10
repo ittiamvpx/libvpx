@@ -561,21 +561,23 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
         start_mode = ZEROMV;
         end_mode = NEWMV;
       } else {
+        GPU_BLOCK_SIZE gpu_bsize = get_gpu_block_size(bsize);
+
         start_mode = NEARESTMV;
         end_mode = NEARMV;
-
         // Read the best_mode, best_rd etc., among ZEROMV, NEWMV
         // as computed by the GPU
-        best_mode = xd->gpu_mvinfo[bsize]->mode;
-        best_rd = xd->gpu_mvinfo[bsize]->best_rd;
-        *returnrate = xd->gpu_mvinfo[bsize]->returnrate;
-        *returndistortion = xd->gpu_mvinfo[bsize]->returndistortion;
-        best_pred_filter = xd->gpu_mvinfo[bsize]->interp_filter;
-        best_tx_size = xd->gpu_mvinfo[bsize]->tx_size;
-        best_ref_frame = xd->gpu_mvinfo[bsize]->ref_frame[0];
-        skip_txfm = xd->gpu_mvinfo[bsize]->skip_txfm;
-        frame_mv[best_mode][ref_frame].as_int =
-            xd->gpu_mvinfo[bsize]->mv[0].as_int;
+        best_mode = x->gpu_output[gpu_bsize]->best_mode;
+        best_rd = x->gpu_output[gpu_bsize]->best_rd;
+        *returnrate = x->gpu_output[gpu_bsize]->returnrate;
+        *returndistortion = x->gpu_output[gpu_bsize]->returndistortion;
+        best_pred_filter = x->gpu_output[gpu_bsize]->best_pred_filter;
+        best_tx_size = x->gpu_output[gpu_bsize]->tx_size;
+        skip_txfm = x->gpu_output[gpu_bsize]->skip_txfm;
+        if (best_mode == ZEROMV)
+          frame_mv[best_mode][ref_frame].as_int = 0;
+        else
+          frame_mv[best_mode][ref_frame].as_mv = x->gpu_output[gpu_bsize]->mv;
       }
     }
 
@@ -754,17 +756,16 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
   }
 
   if (x->data_parallel_processing) {
-    xd->gpu_mvinfo[bsize]->best_rd = best_rd;
-    xd->gpu_mvinfo[bsize]->returnrate = *returnrate;
-    xd->gpu_mvinfo[bsize]->returndistortion = *returndistortion;
-    xd->gpu_mvinfo[bsize]->mode = best_mode;
-    xd->gpu_mvinfo[bsize]->interp_filter = best_pred_filter;
-    xd->gpu_mvinfo[bsize]->tx_size = best_tx_size;
-    xd->gpu_mvinfo[bsize]->ref_frame[0] = best_ref_frame;
-    xd->gpu_mvinfo[bsize]->skip_txfm = skip_txfm;
-    xd->gpu_mvinfo[bsize]->segment_id = segment_id;
-    xd->gpu_mvinfo[bsize]->mv[0].as_int =
-        frame_mv[best_mode][best_ref_frame].as_int;
+    GPU_BLOCK_SIZE gpu_bsize = get_gpu_block_size(bsize);
+
+    x->gpu_output[gpu_bsize]->best_rd = best_rd;
+    x->gpu_output[gpu_bsize]->returnrate = *returnrate;
+    x->gpu_output[gpu_bsize]->returndistortion = *returndistortion;
+    x->gpu_output[gpu_bsize]->best_mode = best_mode;
+    x->gpu_output[gpu_bsize]->best_pred_filter = best_pred_filter;
+    x->gpu_output[gpu_bsize]->tx_size = best_tx_size;
+    x->gpu_output[gpu_bsize]->skip_txfm = skip_txfm;
+    x->gpu_output[gpu_bsize]->mv = frame_mv[best_mode][best_ref_frame].as_mv;
     return ;
   }
 

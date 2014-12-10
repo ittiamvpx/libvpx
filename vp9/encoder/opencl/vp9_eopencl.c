@@ -576,6 +576,7 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
                                      0, NULL, NULL);
     assert(status == CL_SUCCESS);
     gpu_output->mapped_pointer = NULL;
+    cpi->gpu_output_base[gpu_bsize] = NULL;
   }
 
   if (img_src->buffer_alloc != NULL) {

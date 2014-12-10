@@ -88,34 +88,6 @@ static int alloc_mi(VP9_COMMON *cm, int mi_size) {
   return 0;
 }
 
-static int vp9_alloc_gpu_interface_buffers(VP9_COMMON *cm) {
-  BLOCK_SIZE bsize;
-
-  // Allocate memory for GPU output buffers
-  // TODO(ram-ittiam): Do not allocate memory for block sizes that are not
-  // analysed by the GPU
-  for (bsize = BLOCK_8X8; bsize < BLOCK_SIZES; bsize++) {
-    const int blocks_in_row = (cm->sb_cols * num_mxn_blocks_wide_lookup[bsize]);
-    const int blocks_in_col = (cm->sb_rows * num_mxn_blocks_high_lookup[bsize]);
-
-    cm->gpu_mvinfo_base_array[bsize] = (GPU_MV_INFO *)vpx_calloc(
-        blocks_in_row * blocks_in_col,
-        sizeof(*cm->gpu_mvinfo_base_array[bsize]));
-    if (cm->gpu_mvinfo_base_array[bsize] == NULL)
-      return 1;
-  }
-  return 0;
-}
-
-static void vp9_free_gpu_interface_buffers(VP9_COMMON *cm) {
-  BLOCK_SIZE bsize;
-
-  for (bsize = 0; bsize < BLOCK_SIZES; bsize++) {
-    vpx_free(cm->gpu_mvinfo_base_array[bsize]);
-    cm->gpu_mvinfo_base_array[bsize] = NULL;
-  }
-}
-
 static void free_mi(VP9_COMMON *cm) {
   int i;
 
@@ -157,8 +129,6 @@ void vp9_free_context_buffers(VP9_COMMON *cm) {
   free_mi(cm);
 
   if (cm->use_gpu) {
-    vp9_free_gpu_interface_buffers(cm);
-
     vpx_free(cm->is_background_map);
     cm->is_background_map = NULL;
   }
@@ -181,9 +151,6 @@ int vp9_alloc_context_buffers(VP9_COMMON *cm, int width, int height) {
     goto fail;
 
   if (cm->use_gpu) {
-    if (vp9_alloc_gpu_interface_buffers(cm))
-      goto fail;
-
     cm->is_background_map = (uint8_t *)vpx_calloc(
         cm->sb_rows * cm->sb_cols, sizeof(*cm->is_background_map));
     if (!cm->is_background_map) goto fail;

@@ -38,6 +38,7 @@ typedef enum GPU_BLOCK_SIZE {
 } GPU_BLOCK_SIZE;
 
 struct VP9_COMP;
+struct macroblock;
 
 struct GPU_INPUT {
   MV nearest_mv;
@@ -89,7 +90,6 @@ typedef struct SubFrameInfo {
 typedef struct VP9_EGPU {
   void *compute_framework;
   GPU_INPUT *gpu_input[GPU_BLOCK_SIZES];
-  GPU_OUTPUT *gpu_output[GPU_BLOCK_SIZES];
 
   void (*alloc_buffers)(struct VP9_COMP *cpi);
   void (*free_buffers)(struct VP9_COMP *cpi);
@@ -124,22 +124,32 @@ static INLINE int get_gpu_buffer_index(VP9_COMMON *const cm,
   return ((mi_row >> bsl) * group_stride) + (mi_col >> bsl);
 }
 
+void vp9_gpu_set_mvinfo_offsets(struct VP9_COMP *const cpi,
+                                struct macroblock *const x,
+                                int mi_row, int mi_col, BLOCK_SIZE bsize);
+
+void vp9_find_mv_refs_rt(const VP9_COMMON *cm, const struct macroblock *x,
+                         const TileInfo *const tile,
+                         MODE_INFO *mi, MV_REFERENCE_FRAME ref_frame,
+                         int_mv *mv_ref_list,
+                         int mi_row, int mi_col);
+
+#if !CONFIG_GPU_COMPUTE
+
+void vp9_alloc_gpu_interface_buffers(struct VP9_COMP *cpi);
+void vp9_free_gpu_interface_buffers(struct VP9_COMP *cpi);
+
+#else
+
 int vp9_egpu_init(struct VP9_COMP *cpi);
 
 void vp9_subframe_init(SubFrameInfo *subframe, const VP9_COMMON *cm, int row);
 int vp9_get_subframe_index(SubFrameInfo *subframe, const VP9_COMMON *cm,
                            int mi_row);
 
-void vp9_gpu_set_mvinfo_offsets(VP9_COMMON *const cm, MACROBLOCKD *const xd,
-                                int mi_row, int mi_col, BLOCK_SIZE bsize);
+void vp9_gpu_mv_compute(struct VP9_COMP *cpi, struct macroblock *const x);
 
-void vp9_gpu_copy_output_subframe(struct VP9_COMP *cpi, MACROBLOCK *const x,
-                                  GPU_BLOCK_SIZE gpu_bsize,
-                                  GPU_OUTPUT *gpu_output,
-                                  SubFrameInfo *subframe);
-
-void vp9_gpu_mv_compute(struct VP9_COMP *cpi, MACROBLOCK *const x);
-
+#endif
 
 #ifdef __cplusplus
 }  // extern "C"

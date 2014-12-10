@@ -46,16 +46,55 @@ const BLOCK_SIZE vp9_gpu_block_size_lookup[BLOCK_SIZES] = {
     GPU_BLOCK_INVALID,
 };
 
-void vp9_gpu_set_mvinfo_offsets(VP9_COMMON *const cm, MACROBLOCKD *const xd,
+void vp9_gpu_set_mvinfo_offsets(VP9_COMP *const cpi, MACROBLOCK *const x,
                                 int mi_row, int mi_col, BLOCK_SIZE bsize) {
+  const VP9_COMMON *const cm = &cpi->common;
+  const GPU_BLOCK_SIZE gpu_bsize = get_gpu_block_size(bsize);
   const int blocks_in_row = (cm->sb_cols * num_mxn_blocks_wide_lookup[bsize]);
   const int block_index_row = (mi_row >> mi_height_log2(bsize));
   const int block_index_col = (mi_col >> mi_width_log2(bsize));
-  xd->gpu_mvinfo[bsize] = cm->gpu_mvinfo_base_array[bsize] +
-      (block_index_row * blocks_in_row) + block_index_col;
+
+  if (gpu_bsize != GPU_BLOCK_INVALID)
+    x->gpu_output[gpu_bsize] = cpi->gpu_output_base[gpu_bsize] +
+    (block_index_row * blocks_in_row) + block_index_col;
 }
 
-#if CONFIG_GPU_COMPUTE
+void vp9_find_mv_refs_rt(const VP9_COMMON *cm, const MACROBLOCK *x,
+                         const TileInfo *const tile,
+                         MODE_INFO *mi, MV_REFERENCE_FRAME ref_frame,
+                         int_mv *mv_ref_list,
+                         int mi_row, int mi_col) {
+  find_mv_refs_idx(cm, &x->e_mbd, tile, mi, ref_frame, mv_ref_list, -1,
+                   mi_row, mi_col, x->data_parallel_processing);
+}
+
+#if !CONFIG_GPU_COMPUTE
+
+void vp9_alloc_gpu_interface_buffers(VP9_COMP *cpi) {
+  VP9_COMMON *const cm = &cpi->common;
+  GPU_BLOCK_SIZE gpu_bsize;
+
+  for (gpu_bsize = GPU_BLOCK_32X32; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+    const BLOCK_SIZE bsize = get_actual_block_size(gpu_bsize);
+    const int blocks_in_row = (cm->sb_cols * num_mxn_blocks_wide_lookup[bsize]);
+    const int blocks_in_col = (cm->sb_rows * num_mxn_blocks_high_lookup[bsize]);
+
+    CHECK_MEM_ERROR(cm, cpi->gpu_output_base[gpu_bsize],
+                    vpx_calloc(blocks_in_row * blocks_in_col,
+                               sizeof(*cpi->gpu_output_base[gpu_bsize])));
+  }
+}
+
+void vp9_free_gpu_interface_buffers(VP9_COMP *cpi) {
+  GPU_BLOCK_SIZE gpu_bsize;
+
+  for (gpu_bsize = GPU_BLOCK_32X32; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+    vpx_free(cpi->gpu_output_base[gpu_bsize]);
+    cpi->gpu_output_base[gpu_bsize] = NULL;
+  }
+}
+
+#else
 
 int vp9_egpu_init(VP9_COMP *cpi) {
 #if CONFIG_OPENCL
@@ -136,6 +175,7 @@ static void vp9_gpu_fill_rd_parameters(VP9_COMP *cpi, MACROBLOCK *const x) {
     rd_param_ptr->thresh_fact_newmv = cpi->rd.thresh_freq_fact[bsize][NEWMV];
   }
 }
+
 static void vp9_gpu_fill_input_block(VP9_COMP *cpi, const TileInfo *const tile,
                                      GPU_INPUT *gpu_input,
                                      int mi_row, int mi_col,
@@ -242,56 +282,6 @@ static void vp9_gpu_fill_mv_input(VP9_COMP *cpi, const TileInfo * const tile) {
         vp9_gpu_fill_input_block(cpi, tile, gpu_input, mi_row, mi_col,
                                  bsize);
       }
-    }
-  }
-
-}
-
-// TODO(karthick-ittiam) : Ideally GPU_OUTPUT and GPU_MV_INFO structs should be
-// merged/unified and this copy should be removed altogether
-void vp9_gpu_copy_output_subframe(VP9_COMP *cpi, MACROBLOCK *const x,
-                                  GPU_BLOCK_SIZE gpu_bsize,
-                                  GPU_OUTPUT *gpu_output,
-                                  SubFrameInfo *subframe) {
-  VP9_COMMON *const cm = &cpi->common;
-  MACROBLOCKD *const xd = &x->e_mbd;
-  const BLOCK_SIZE bsize = get_actual_block_size(gpu_bsize);
-  int mi_row, mi_col;
-  const int mi_row_step = num_8x8_blocks_high_lookup[bsize];
-  const int mi_col_step = num_8x8_blocks_wide_lookup[bsize];
-
-  for (mi_row = subframe->mi_row_start; mi_row < subframe->mi_row_end;
-       mi_row += mi_row_step) {
-    for (mi_col = 0; mi_col < cm->mi_cols; mi_col += mi_col_step) {
-      const int idx = get_gpu_buffer_index(cm, mi_row, mi_col, bsize);
-      GPU_OUTPUT *const gpu_output_block = gpu_output + idx;
-      const int ms = num_8x8_blocks_wide_lookup[bsize] / 2;
-      const int force_horz_split = (mi_row + ms >= cm->mi_rows);
-      const int force_vert_split = (mi_col + ms >= cm->mi_cols);
-      if (force_horz_split | force_vert_split) {
-        continue;
-      }
-
-      vp9_gpu_set_mvinfo_offsets(cm, xd, mi_row, mi_col,
-          bsize);
-
-      xd->gpu_mvinfo[bsize]->mode         = gpu_output_block->best_mode;
-      xd->gpu_mvinfo[bsize]->best_rd      = gpu_output_block->best_rd;
-      xd->gpu_mvinfo[bsize]->returnrate   = gpu_output_block->returnrate;
-      xd->gpu_mvinfo[bsize]->returndistortion =
-          gpu_output_block->returndistortion;
-      xd->gpu_mvinfo[bsize]->interp_filter =
-          gpu_output_block->best_pred_filter;
-      xd->gpu_mvinfo[bsize]->skip_txfm    = gpu_output_block->skip_txfm;
-      xd->gpu_mvinfo[bsize]->tx_size      = gpu_output_block->tx_size;
-      // Assuming reference frame is only LAST_FRAME.
-      xd->gpu_mvinfo[bsize]->ref_frame[0] = LAST_FRAME;
-      // Assuming segment ID is 0.
-      xd->gpu_mvinfo[bsize]->segment_id   = 0;
-      if (xd->gpu_mvinfo[bsize]->mode == ZEROMV)
-        xd->gpu_mvinfo[bsize]->mv[0].as_int = 0;
-      else
-        xd->gpu_mvinfo[bsize]->mv[0].as_mv  = gpu_output_block->mv;
     }
   }
 }

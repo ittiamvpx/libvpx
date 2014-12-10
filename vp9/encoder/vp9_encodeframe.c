@@ -170,8 +170,9 @@ static void set_offsets(VP9_COMP *cpi, MACROBLOCK *const x,
 
   set_modeinfo_offsets(cm, xd, mi_row, mi_col);
 
-  if (cm->use_gpu)
-    vp9_gpu_set_mvinfo_offsets(cm, xd, mi_row, mi_col, bsize);
+  if (cm->use_gpu) {
+    vp9_gpu_set_mvinfo_offsets(cpi, x, mi_row, mi_col, bsize);
+  }
 
   mbmi = &xd->mi[0]->mbmi;
 
@@ -2878,8 +2879,9 @@ static void nonrd_pick_partition(VP9_COMP *cpi, MACROBLOCK *const x,
 
         if (mi_row + y_idx >= cm->mi_rows || mi_col + x_idx >= cm->mi_cols)
           continue;
-        vp9_gpu_set_mvinfo_offsets(cm, xd, mi_row + y_idx, mi_col + x_idx, BLOCK_16X16);
-        total_rd_16x16 += xd->gpu_mvinfo[BLOCK_16X16]->best_rd;
+        vp9_gpu_set_mvinfo_offsets(cpi, x, mi_row + y_idx, mi_col + x_idx,
+                                   BLOCK_16X16);
+        total_rd_16x16 += x->gpu_output[GPU_BLOCK_16X16]->best_rd;
       }
       // If the 32x32 RD cost is 12.5% lesser than the total RD cost(from GPU)
       // of its sub 16x16 blocks, then avoid further computations for 16x16
@@ -3210,7 +3212,6 @@ static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
 {
   SPEED_FEATURES *const sf = &cpi->sf;
   VP9_COMMON *const cm = &cpi->common;
-  MACROBLOCKD *const xd = &x->e_mbd;
   GPU_BLOCK_SIZE i;
   int h, j, k;
   const int num_32x32_in_64x64 = 4;
@@ -3288,10 +3289,9 @@ static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
             int64_t rdcost_minus_12_point_5_percent = rdcost[GPU_BLOCK_16X16] -
                 (rdcost[GPU_BLOCK_16X16] / 8);
             if (rdcost[GPU_BLOCK_32X32] < rdcost_minus_12_point_5_percent) {
-              vp9_gpu_set_mvinfo_offsets(cm, xd,
-                                         actual_mi_row, actual_mi_col,
+              vp9_gpu_set_mvinfo_offsets(cpi, x, actual_mi_row, actual_mi_col,
                                          BLOCK_8X8);
-              xd->gpu_mvinfo[BLOCK_8X8]->best_rd = INT64_MAX;
+              x->gpu_output[GPU_BLOCK_8X8]->best_rd = INT64_MAX;
               continue;
             }
           }
@@ -3337,9 +3337,7 @@ static void encode_nonrd_sb_row(VP9_COMP *cpi, MACROBLOCK *const x,
       egpu->enc_sync_read(cpi, subframe_idx);
       for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
         egpu->acquire_output_buffer(cpi, gpu_bsize,
-                                    (void **)&egpu->gpu_output[gpu_bsize]);
-        vp9_gpu_copy_output_subframe(cpi, x, gpu_bsize,
-                                     cpi->egpu.gpu_output[gpu_bsize], &subframe);
+                                    (void **)&cpi->gpu_output_base[gpu_bsize]);
       }
     }
   }

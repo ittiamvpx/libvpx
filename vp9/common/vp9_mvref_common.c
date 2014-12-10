@@ -123,15 +123,6 @@ void vp9_find_mv_refs(const VP9_COMMON *cm, const MACROBLOCKD *xd,
                    mi_row, mi_col, 0);
 }
 
-void vp9_find_mv_refs_rt(const VP9_COMMON *cm, const MACROBLOCK *x,
-                                 const TileInfo *const tile,
-                                 MODE_INFO *mi, MV_REFERENCE_FRAME ref_frame,
-                                 int_mv *mv_ref_list,
-                                 int mi_row, int mi_col) {
-  find_mv_refs_idx(cm, &x->e_mbd, tile, mi, ref_frame, mv_ref_list, -1,
-                   mi_row, mi_col, x->data_parallel_processing);
-}
-
 static void lower_mv_precision(MV *mv, int allow_hp) {
   const int use_hp = allow_hp && vp9_use_mv_hp(mv);
   if (!use_hp) {

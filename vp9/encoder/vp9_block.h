@@ -17,6 +17,7 @@
 #include "vp9/common/vp9_onyxc_int.h"
 
 #include "vp9/encoder/vp9_rd.h"
+#include "vp9/encoder/vp9_egpu.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -107,6 +108,9 @@ struct macroblock {
 
   // note that token_costs is the cost when eob node is skipped
   vp9_coeff_cost token_costs[TX_SIZES];
+
+  // pointer to MV results from GPU
+  GPU_OUTPUT *gpu_output[GPU_BLOCK_SIZES];
 
   // Thread id
   int thread_id;

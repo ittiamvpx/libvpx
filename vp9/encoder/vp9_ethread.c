@@ -159,8 +159,6 @@ void vp9_mb_copy(VP9_COMP *cpi, MACROBLOCK *x_dst, MACROBLOCK *x_src) {
   xd_dst->mi_stride = xd_src->mi_stride;
   xd_dst->mi = xd_src->mi;
   xd_dst->mi[0] = xd_src->mi[0];
-  for (i = 0; i < BLOCK_SIZES; i++)
-    xd_dst->gpu_mvinfo[i] = NULL;
   xd_dst->block_refs[0] = xd_src->block_refs[0];
   xd_dst->block_refs[1] = xd_src->block_refs[1];
   xd_dst->cur_buf = xd_src->cur_buf;

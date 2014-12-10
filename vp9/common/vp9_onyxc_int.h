@@ -159,12 +159,6 @@ typedef struct VP9Common {
   MODE_INFO **prev_mi_grid_base;
   MODE_INFO **prev_mi_grid_visible;
 
-  // We allocate a GPU_MV_INFO struct for each block size in the frame.
-  // This memory space is populated by the GPU during inter MV analysis
-
-  // pointer to GPU output Buffers
-  GPU_MV_INFO *gpu_mvinfo_base_array[BLOCK_SIZES];
-
   // pointer to a frame level buffer representing if the SB unit
   // is background or not. This information is populated by the GPU.
   uint8_t *is_background_map;

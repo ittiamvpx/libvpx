@@ -331,6 +331,9 @@ typedef struct VP9_COMP {
 
   CYCLIC_REFRESH *cyclic_refresh;
 
+  // pointer to GPU output Buffers
+  GPU_OUTPUT *gpu_output_base[GPU_BLOCK_SIZES];
+
   // encoder thread handle
   VP9Worker *enc_thread_hndl;
   int max_threads;

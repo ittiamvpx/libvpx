@@ -13,8 +13,6 @@
 #include "vp9/common/vp9_onyxc_int.h"
 #include "vp9/common/vp9_blockd.h"
 
-#include "vp9/encoder/vp9_block.h"
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -217,11 +215,6 @@ void vp9_find_mv_refs(const VP9_COMMON *cm, const MACROBLOCKD *xd,
                       const TileInfo *const tile,
                       MODE_INFO *mi, MV_REFERENCE_FRAME ref_frame,
                       int_mv *mv_ref_list, int mi_row, int mi_col);
-
-void vp9_find_mv_refs_rt(const VP9_COMMON *cm, const MACROBLOCK *x,
-                         const TileInfo *const tile,
-                         MODE_INFO *mi, MV_REFERENCE_FRAME ref_frame,
-                         int_mv *mv_ref_list, int mi_row, int mi_col);
 
 // check a list of motion vectors by sad score using a number rows of pixels
 // above and a number cols of pixels in the left to select the one with best
