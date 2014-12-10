@@ -720,6 +720,9 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   }
 #endif
 
+  status = clFlush(opencl->cmd_queue);
+  assert(status == CL_SUCCESS);
+
   if (gpu_bsize == GPU_BLOCK_8X8) {
     status = clEnqueueMarker(opencl->cmd_queue,
                              &eopencl->event[subframe_idx]);
