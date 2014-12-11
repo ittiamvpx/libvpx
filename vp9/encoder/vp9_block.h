@@ -109,6 +109,8 @@ struct macroblock {
   // note that token_costs is the cost when eob node is skipped
   vp9_coeff_cost token_costs[TX_SIZES];
 
+  int use_gpu;
+
   // pointer to MV results from GPU
   GPU_OUTPUT *gpu_output[GPU_BLOCK_SIZES];
 

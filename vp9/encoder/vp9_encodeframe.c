@@ -170,7 +170,7 @@ static void set_offsets(VP9_COMP *cpi, MACROBLOCK *const x,
 
   set_modeinfo_offsets(cm, xd, mi_row, mi_col);
 
-  if (cm->use_gpu) {
+  if (x->use_gpu) {
     vp9_gpu_set_mvinfo_offsets(cpi, x, mi_row, mi_col, bsize);
   }
 
@@ -1865,12 +1865,13 @@ static void rd_auto_partition_range(VP9_COMP *cpi, MACROBLOCKD *const xd,
   *max_block_size = max_size;
 }
 
-static void auto_partition_range(VP9_COMP *cpi, MACROBLOCKD *const xd,
+static void auto_partition_range(VP9_COMP *cpi, MACROBLOCK *const x,
                                  const TileInfo *const tile,
                                  int mi_row, int mi_col,
                                  BLOCK_SIZE *min_block_size,
                                  BLOCK_SIZE *max_block_size) {
   VP9_COMMON *const cm = &cpi->common;
+  MACROBLOCKD *xd = &x->e_mbd;
   MODE_INFO **mi_8x8 = xd->mi;
   const int left_in_image = xd->left_available && mi_8x8[-1];
   const int above_in_image = xd->up_available &&
@@ -1890,7 +1891,7 @@ static void auto_partition_range(VP9_COMP *cpi, MACROBLOCKD *const xd,
   // based on previous frame's MODE_INFO.
 
   // Trap case where we do not have a prediction.
-  if (!cm->use_gpu && search_range_ctrl &&
+  if (!x->use_gpu && search_range_ctrl &&
       (left_in_image || above_in_image || cm->frame_type != KEY_FRAME)) {
     int block;
     MODE_INFO **mi;
@@ -2859,7 +2860,7 @@ static void nonrd_pick_partition(VP9_COMP *cpi, MACROBLOCK *const x,
 
     // GPU mode : Let us try to avoid any further computations for 16x16,
     // if its RD cost results from GPU suggests that 32x32 is better
-    if (cm->use_gpu && bsize == BLOCK_32X32) {
+    if (x->use_gpu && bsize == BLOCK_32X32) {
       int64_t total_rd_16x16 = 0;
       int is_gpu_block = 1;
       for (i = 0; i < 4; ++i) {
@@ -3322,26 +3323,46 @@ static void encode_nonrd_sb_row(VP9_COMP *cpi, MACROBLOCK *const x,
   vpx_memset(&xd->left_context, 0, sizeof(xd->left_context));
   vpx_memset(xd->left_seg_context, 0, sizeof(xd->left_seg_context));
 
-#if CONFIG_GPU_COMPUTE
   // when gpu is enabled, before encoding the frame make sure all the
   // dependencies are met
-  if (cm->use_gpu && !x->data_parallel_processing) {
-    VP9_EGPU *egpu = &cpi->egpu;
-    GPU_BLOCK_SIZE gpu_bsize;
+  if (cm->use_gpu) {
     SubFrameInfo subframe;
     int subframe_idx;
 
-    subframe_idx = vp9_get_subframe_index(&subframe, cm, mi_row);
+    // GPU ME compute analysis of the input image is done in parts.
 
-    if (mi_row == subframe.mi_row_start) {
-      egpu->enc_sync_read(cpi, subframe_idx);
-      for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
-        egpu->acquire_output_buffer(cpi, gpu_bsize,
-                                    (void **)&cpi->gpu_output_base[gpu_bsize]);
+    // The input image is divided in to sub-frames, and GPU computes ME one
+    // sub-frame after another. After the completion of the sub-frame, the GPU
+    // returns its output so that CPU can start encoding. Hence for the first
+    // sub-frame of the image the CPU has to wait and does nothing.
+
+    // To avoid this, the first/first-few sub frames are run directly on CPU.
+    // While CPU is encoding first few sub frames, GPU can process the
+    // remaining sections and send the output in time for CPU.
+    subframe_idx = vp9_get_subframe_index(&subframe, cm, mi_row);
+    if (subframe_idx < CPU_SUB_FRAMES) {
+      x->use_gpu = 0;
+    } else {
+      x->use_gpu = cm->use_gpu;
+    }
+#if CONFIG_GPU_COMPUTE
+    if (x->use_gpu) {
+      // TODO(ram-ittiam): Make multi-threads wait on events as well.
+      if (mi_row == subframe.mi_row_start) {
+        VP9_EGPU *egpu = &cpi->egpu;
+        GPU_BLOCK_SIZE gpu_bsize;
+        egpu->enc_sync_read(cpi, subframe_idx);
+        for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+          egpu->acquire_output_buffer(cpi, gpu_bsize,
+                                      (void **)&cpi->gpu_output_base[gpu_bsize]);
+        }
       }
     }
-  }
+#else
+    if (x->data_parallel_processing && !x->use_gpu)
+      return;
 #endif
+  }
 
   // Code each SB in the row
   for (mi_col = tile->mi_col_start; mi_col < tile->mi_col_end;
@@ -3399,10 +3420,10 @@ static void encode_nonrd_sb_row(VP9_COMP *cpi, MACROBLOCK *const x,
       case REFERENCE_PARTITION:
         // When GPU is enabled, the 'is_background' result is computed and
         // stored during the data parallel processing.
-        if (x->data_parallel_processing || !cm->use_gpu) {
+        if (x->data_parallel_processing || !x->use_gpu) {
           if (!sf->partition_check)
             x->in_static_area = is_background(cpi, tile, mi_row, mi_col);
-          if(cm->use_gpu) {
+          if (x->use_gpu) {
             const int sb_index = get_sb_index(cm, mi_row, mi_col);
             cm->is_background_map[sb_index] = x->in_static_area;
           }
@@ -3415,7 +3436,7 @@ static void encode_nonrd_sb_row(VP9_COMP *cpi, MACROBLOCK *const x,
         if (sf->partition_check || !x->in_static_area) {
           if (!x->data_parallel_processing) {
             set_modeinfo_offsets(cm, xd, mi_row, mi_col);
-            auto_partition_range(cpi, xd, tile, mi_row, mi_col,
+            auto_partition_range(cpi, x, tile, mi_row, mi_col,
                                  &x->min_partition_size,
                                  &x->max_partition_size);
             nonrd_pick_partition(cpi, x, tile, tp, mi_row, mi_col, BLOCK_64X64,

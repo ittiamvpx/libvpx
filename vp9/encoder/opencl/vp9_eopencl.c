@@ -122,7 +122,8 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
       goto fail;
 
     // create sub buffers
-    for (subframe_idx = 0; subframe_idx < MAX_SUB_FRAMES; ++subframe_idx) {
+    for (subframe_idx = CPU_SUB_FRAMES; subframe_idx < MAX_SUB_FRAMES;
+         ++subframe_idx) {
       cl_buffer_region sf_region;
       SubFrameInfo subframe;
       int block_row_offset;
@@ -181,7 +182,8 @@ static void vp9_opencl_free_buffers(VP9_COMP *cpi) {
     opencl_buffer *rdopt_parameters = &eopencl->rdopt_parameters[gpu_bsize];
     int subframe_id;
 
-    for (subframe_id = 0; subframe_id < MAX_SUB_FRAMES; subframe_id++) {
+    for (subframe_id = CPU_SUB_FRAMES; subframe_id < MAX_SUB_FRAMES;
+         ++subframe_id) {
       status = clReleaseMemObject(
           eopencl->gpu_input_sub_buffer[gpu_bsize][subframe_id]);
       if (status != CL_SUCCESS)

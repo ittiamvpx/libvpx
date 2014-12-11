@@ -27,6 +27,7 @@ extern "C" {
 
 #define GPU_INTER_MODES 2 // ZEROMV and NEWMV
 #define MAX_SUB_FRAMES 4
+#define CPU_SUB_FRAMES 0
 
 // Block sizes for which MV computations are done in GPU
 typedef enum GPU_BLOCK_SIZE {
@@ -134,6 +135,10 @@ void vp9_find_mv_refs_rt(const VP9_COMMON *cm, const struct macroblock *x,
                          int_mv *mv_ref_list,
                          int mi_row, int mi_col);
 
+void vp9_subframe_init(SubFrameInfo *subframe, const VP9_COMMON *cm, int row);
+int vp9_get_subframe_index(SubFrameInfo *subframe, const VP9_COMMON *cm,
+                           int mi_row);
+
 #if !CONFIG_GPU_COMPUTE
 
 void vp9_alloc_gpu_interface_buffers(struct VP9_COMP *cpi);
@@ -142,10 +147,6 @@ void vp9_free_gpu_interface_buffers(struct VP9_COMP *cpi);
 #else
 
 int vp9_egpu_init(struct VP9_COMP *cpi);
-
-void vp9_subframe_init(SubFrameInfo *subframe, const VP9_COMMON *cm, int row);
-int vp9_get_subframe_index(SubFrameInfo *subframe, const VP9_COMMON *cm,
-                           int mi_row);
 
 void vp9_gpu_mv_compute(struct VP9_COMP *cpi, struct macroblock *const x);
 

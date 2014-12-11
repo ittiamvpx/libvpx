@@ -537,7 +537,7 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
                             &frame_mv[NEARMV][ref_frame]);
 
       if (!vp9_is_scaled(sf) && bsize >= BLOCK_8X8 &&
-          (!cm->use_gpu || x->data_parallel_processing))
+          (!x->use_gpu || x->data_parallel_processing))
         vp9_mv_pred(cpi, x, yv12_mb[ref_frame][0].buf, yv12->y_stride,
                     ref_frame, bsize);
     } else {
@@ -556,7 +556,7 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
     // Mode info, thus making the algorithm/execution data serial. To off-load
     // some of the algorithms to the GPU, we need make it data-parallel.
     // We have currently data parallelized ZEROMV and NEWMV computations.
-    if (cm->use_gpu && is_gpu_block) {
+    if (x->use_gpu && is_gpu_block) {
       if (x->data_parallel_processing) {
         start_mode = ZEROMV;
         end_mode = NEWMV;

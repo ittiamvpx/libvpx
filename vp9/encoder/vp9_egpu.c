@@ -68,6 +68,30 @@ void vp9_find_mv_refs_rt(const VP9_COMMON *cm, const MACROBLOCK *x,
                    mi_row, mi_col, x->data_parallel_processing);
 }
 
+static int get_subframe_offset(int idx, int mi_rows, int sb_rows) {
+  const int offset = ((idx * sb_rows) / MAX_SUB_FRAMES) << MI_BLOCK_SIZE_LOG2;
+  return MIN(offset, mi_rows);
+}
+
+void vp9_subframe_init(SubFrameInfo *subframe, const VP9_COMMON *cm, int idx) {
+  subframe->mi_row_start = get_subframe_offset(idx, cm->mi_rows, cm->sb_rows);
+  subframe->mi_row_end = get_subframe_offset(idx + 1, cm->mi_rows, cm->sb_rows);
+}
+
+int vp9_get_subframe_index(SubFrameInfo *subframe, const VP9_COMMON *cm,
+                           int mi_row) {
+  int idx;
+
+  for (idx = 0; idx < MAX_SUB_FRAMES; ++idx) {
+    vp9_subframe_init(subframe, cm, idx);
+    if (mi_row >= subframe->mi_row_start && mi_row < subframe->mi_row_end) {
+      break;
+    }
+  }
+  assert(idx < MAX_SUB_FRAMES);
+  return idx;
+}
+
 #if !CONFIG_GPU_COMPUTE
 
 void vp9_alloc_gpu_interface_buffers(VP9_COMP *cpi) {
@@ -102,30 +126,6 @@ int vp9_egpu_init(VP9_COMP *cpi) {
 #else
   return 1;
 #endif
-}
-
-static int get_subframe_offset(int idx, int mi_rows, int sb_rows) {
-  const int offset = ((idx * sb_rows) / MAX_SUB_FRAMES) << MI_BLOCK_SIZE_LOG2;
-  return MIN(offset, mi_rows);
-}
-
-void vp9_subframe_init(SubFrameInfo *subframe, const VP9_COMMON *cm, int idx) {
-  subframe->mi_row_start = get_subframe_offset(idx, cm->mi_rows, cm->sb_rows);
-  subframe->mi_row_end = get_subframe_offset(idx + 1, cm->mi_rows, cm->sb_rows);
-}
-
-int vp9_get_subframe_index(SubFrameInfo *subframe, const VP9_COMMON *cm,
-                           int mi_row) {
-  int idx;
-
-  for (idx = 0; idx < MAX_SUB_FRAMES; ++idx) {
-    vp9_subframe_init(subframe, cm, idx);
-    if (mi_row >= subframe->mi_row_start && mi_row < subframe->mi_row_end) {
-      break;
-    }
-  }
-  assert(idx < MAX_SUB_FRAMES);
-  return idx;
 }
 
 static void vp9_gpu_fill_rd_parameters(VP9_COMP *cpi, MACROBLOCK *const x) {
@@ -241,11 +241,19 @@ static void vp9_gpu_fill_mv_input(VP9_COMP *cpi, const TileInfo * const tile) {
   if (!sf->partition_check) {
     for (mi_row = tile->mi_row_start; mi_row < tile->mi_row_end; mi_row +=
         MI_BLOCK_SIZE) {
+      SubFrameInfo subframe;
+      int subframe_idx;
+
+      subframe_idx = vp9_get_subframe_index(&subframe, cm, mi_row);
+      if (subframe_idx < CPU_SUB_FRAMES)
+        continue;
+
       for (mi_col = tile->mi_col_start; mi_col < tile->mi_col_end; mi_col +=
           MI_BLOCK_SIZE) {
         const int sb_row_index = mi_row / MI_SIZE;
         const int sb_col_index = mi_col / MI_SIZE;
         const int sb_index = (cm->sb_cols * sb_row_index + sb_col_index);
+
         cm->is_background_map[sb_index] = is_background(cpi, tile, mi_row,
                                                         mi_col);
       }
@@ -261,10 +269,18 @@ static void vp9_gpu_fill_mv_input(VP9_COMP *cpi, const TileInfo * const tile) {
 
     for (mi_row = tile->mi_row_start; mi_row < tile->mi_row_end; mi_row +=
         mi_row_step) {
+      SubFrameInfo subframe;
+      int subframe_idx;
+
+      subframe_idx = vp9_get_subframe_index(&subframe, cm, mi_row);
+      if (subframe_idx < CPU_SUB_FRAMES)
+        continue;
+
       for (mi_col = tile->mi_col_start; mi_col < tile->mi_col_end; mi_col +=
           mi_col_step) {
         GPU_INPUT *gpu_input = gpu_input_base
             + get_gpu_buffer_index(cm, mi_row, mi_col, bsize);
+
         if (!sf->partition_check) {
           const int sb_row_index = mi_row / MI_SIZE;
           const int sb_col_index = mi_col / MI_SIZE;
@@ -293,7 +309,7 @@ void vp9_gpu_mv_compute(VP9_COMP *cpi, MACROBLOCK *const x) {
   const int tile_rows = 1 << cm->log2_tile_rows;
   VP9_EGPU * const egpu = &cpi->egpu;
   GPU_BLOCK_SIZE gpu_bsize;
-  int subframe_index;
+  int subframe_idx;
 
   x->data_parallel_processing = 1;
 
@@ -309,9 +325,10 @@ void vp9_gpu_mv_compute(VP9_COMP *cpi, MACROBLOCK *const x) {
     }
   }
   // enqueue kernels for gpu
-  for (subframe_index = 0; subframe_index < MAX_SUB_FRAMES; subframe_index++) {
+  for (subframe_idx = CPU_SUB_FRAMES; subframe_idx < MAX_SUB_FRAMES;
+       subframe_idx++) {
     for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
-      egpu->execute(cpi, gpu_bsize, subframe_index);
+      egpu->execute(cpi, gpu_bsize, subframe_idx);
     }
   }
   // re-map source and reference pointers before starting cpu side processing
