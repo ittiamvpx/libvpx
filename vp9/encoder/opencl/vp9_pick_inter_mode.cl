@@ -350,18 +350,10 @@ typedef enum {
     sum.s0123 = sum.s0123 + sum.s4567;                                  \
     sum.s01   = sum.s01   + sum.s23;                                    \
     sum.s0    = sum.s0    + sum.s1;                                     \
-    barrier(CLK_LOCAL_MEM_FENCE);                                       \
-    intermediate_int[(local_row * LOCAL_STRIDE) + local_col] = sum.s0;  \
-    ACCUMULATE_MULTI_ROW(BLOCK_SIZE_IN_PIXELS, intermediate_int)        \
-    barrier(CLK_LOCAL_MEM_FENCE);                                       \
-    *psum = intermediate_int[0];                                        \
+    atomic_add(psum, sum.s0);                                           \
     sse.s01   = sse.s01   + sse.s23;                                    \
     sse.s0    = sse.s0    + sse.s1;                                     \
-    barrier(CLK_LOCAL_MEM_FENCE);                                       \
-    intermediate_int[(local_row * LOCAL_STRIDE) + local_col] = sse.s0;  \
-    ACCUMULATE_MULTI_ROW(BLOCK_SIZE_IN_PIXELS, intermediate_int)        \
-    barrier(CLK_LOCAL_MEM_FENCE);                                       \
-    *psse = intermediate_int[0];
+    atomic_add(psse, sse.s0);                                           \
 
 #define CALCULATE_RATE_DIST                                                 \
   if (tx_mode == TX_MODE_SELECT) {                                          \
@@ -1626,6 +1618,10 @@ inline void inter_prediction(__global uchar *ref_data,
   uchar8 out_uni;
   uchar8 out_bi;
   int i;
+
+  *psum = 0;
+  *psse = 0;
+  barrier(CLK_LOCAL_MEM_FENCE);
 
   if (!vert_subpel) {
     /* L0 only x_frac */
