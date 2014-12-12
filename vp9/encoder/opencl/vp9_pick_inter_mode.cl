@@ -189,74 +189,6 @@ typedef enum {
 #define MIN(x, y) (((x) < (y)) ? (x) : (y))
 #define MAX(x, y) (((x) > (y)) ? (x) : (y))
 
-#define ACCUMULATE(block_size_in_pixels, inter)     \
-  if (block_size_in_pixels >= 32) {                 \
-    barrier(CLK_LOCAL_MEM_FENCE);                   \
-    if (local_col < 2)                              \
-      inter[(local_row * LOCAL_STRIDE) + local_col] += inter[(local_row * LOCAL_STRIDE) + local_col + 2]; \
-  }                                                 \
-  if (block_size_in_pixels >= 16) {                 \
-    barrier(CLK_LOCAL_MEM_FENCE);                   \
-    if (local_col < 1)                              \
-      inter[(local_row * LOCAL_STRIDE)] += inter[(local_row * LOCAL_STRIDE) + 1];  \
-  }                                                 \
-  if (block_size_in_pixels >= 32) {                 \
-    barrier(CLK_LOCAL_MEM_FENCE);                   \
-    if (local_row < 16 && local_col == 0)           \
-      inter[(local_row * LOCAL_STRIDE)] += inter[(local_row + 16) * LOCAL_STRIDE]; \
-  }                                                 \
-  if (block_size_in_pixels >= 16) {                 \
-    barrier(CLK_LOCAL_MEM_FENCE);                   \
-    if (local_row < 8 && local_col == 0)            \
-      inter[(local_row * LOCAL_STRIDE)] += inter[(local_row + 8) * LOCAL_STRIDE];  \
-  }                                                 \
-  barrier(CLK_LOCAL_MEM_FENCE);                     \
-  if (local_row < 4 && local_col == 0)              \
-    inter[(local_row * LOCAL_STRIDE)] += inter[(local_row + 4) * LOCAL_STRIDE]; \
-  barrier(CLK_LOCAL_MEM_FENCE);                     \
-  if (local_row < 2 && local_col == 0)              \
-    inter[(local_row * LOCAL_STRIDE)] += inter[(local_row + 2) * LOCAL_STRIDE]; \
-  barrier(CLK_LOCAL_MEM_FENCE);                     \
-  if (local_row < 1 && local_col == 0)              \
-    inter[(local_row * LOCAL_STRIDE)] += inter[(local_row + 1) * LOCAL_STRIDE];
-
-#define ACCUMULATE_MULTI_ROW(block_size_in_pixels,inter) \
-  if (block_size_in_pixels / NUM_PIXELS_PER_WORKITEM >= 4) {                   \
-    barrier(CLK_LOCAL_MEM_FENCE);                                              \
-    if (local_col < 2)                                                         \
-      inter[(local_row * LOCAL_STRIDE) + local_col] += inter[(local_row * LOCAL_STRIDE) + local_col + 2]; \
-  }                                                                            \
-  if (block_size_in_pixels / NUM_PIXELS_PER_WORKITEM >= 2) {                   \
-    barrier(CLK_LOCAL_MEM_FENCE);                                              \
-    if (local_col < 1)                                                         \
-      inter[(local_row * LOCAL_STRIDE)] += inter[(local_row * LOCAL_STRIDE) + 1]; \
-  }                                                                            \
-  if (block_size_in_pixels / PIXEL_ROWS_PER_WORKITEM >= 32) {                  \
-    barrier(CLK_LOCAL_MEM_FENCE);                                              \
-    if (local_row < 16 && local_col == 0)                                      \
-      inter[(local_row * LOCAL_STRIDE)] += inter[(local_row + 16) * LOCAL_STRIDE];\
-  }                                                                            \
-  if (block_size_in_pixels / PIXEL_ROWS_PER_WORKITEM >= 16) {                  \
-    barrier(CLK_LOCAL_MEM_FENCE);                                              \
-    if (local_row < 8 && local_col == 0)                                       \
-      inter[(local_row * LOCAL_STRIDE)] += inter[(local_row + 8) * LOCAL_STRIDE]; \
-  }                                                                            \
-  if (block_size_in_pixels / PIXEL_ROWS_PER_WORKITEM >= 8) {                   \
-    barrier(CLK_LOCAL_MEM_FENCE);                                              \
-    if (local_row < 4 && local_col == 0)                                       \
-      inter[(local_row * LOCAL_STRIDE)] += inter[(local_row + 4) * LOCAL_STRIDE]; \
-  }                                                                            \
-  if (block_size_in_pixels / PIXEL_ROWS_PER_WORKITEM >= 4) {                   \
-    barrier(CLK_LOCAL_MEM_FENCE);                                              \
-    if (local_row < 2 && local_col == 0)                                       \
-      inter[(local_row * LOCAL_STRIDE)] += inter[(local_row + 2) * LOCAL_STRIDE]; \
-  }                                                                            \
-  if (block_size_in_pixels / PIXEL_ROWS_PER_WORKITEM >= 2) {                   \
-    barrier(CLK_LOCAL_MEM_FENCE);                                              \
-    if (local_row < 1 && local_col == 0)                                       \
-      inter[(local_row * LOCAL_STRIDE)] += inter[(local_row + 1) * LOCAL_STRIDE]; \
-  }
-
 #define CHECK_BETTER                                         \
   {                                                          \
     if (thissad < bestsad) {                                 \
@@ -288,63 +220,6 @@ typedef enum {
 // filter kernel as a 2 tap filter.
 #define BILINEAR_FILTERS_2TAP(x) \
   (vp9_bilinear_filters[(x)])
-
-#define SETUP_SUBPEL_CHECKS                                            \
-{                                                                      \
-    hstep = 4;                                                         \
-    besterr = CL_INT_MAX;                                              \
-                                                                       \
-    calculate_fullpel_variance(ref_frame, cur_frame, stride,           \
-                      &sse, &sum, &best_mv);                           \
-                                                                       \
-   if(BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM) {                                    \
-    barrier(CLK_LOCAL_MEM_FENCE);                                      \
-    intermediate_sum[local_row * LOCAL_STRIDE + local_col] = sum;      \
-    ACCUMULATE_MULTI_ROW(BLOCK_SIZE_IN_PIXELS,intermediate_sum);       \
-    barrier(CLK_LOCAL_MEM_FENCE);                                      \
-    sum = intermediate_sum[0];                                         \
-                                                                       \
-    barrier(CLK_LOCAL_MEM_FENCE);                                      \
-    intermediate_sse[local_row * LOCAL_STRIDE + local_col] = sse;      \
-    ACCUMULATE_MULTI_ROW(BLOCK_SIZE_IN_PIXELS,intermediate_sse);       \
-    barrier(CLK_LOCAL_MEM_FENCE);                                      \
-    sse = intermediate_sse[0];                                         \
-   }                                                                   \
-                                                                       \
-    besterr = sse - (((long int)sum * sum)                             \
-                      / (BLOCK_SIZE_IN_PIXELS * BLOCK_SIZE_IN_PIXELS));\
-                                                                       \
-    besterr += mv_err_cost(&best_mv, &nearest_mv,                      \
-                           nmvcost_0, nmvcost_1, nmvjointcost,         \
-                           error_per_bit);                             \
-                                                                       \
-    minmv.col = MAX(x->mv_col_min * 8, fcenter_mv.col - MV_MAX);       \
-    maxmv.col = MIN(x->mv_col_max * 8, fcenter_mv.col + MV_MAX);       \
-    minmv.row = MAX(x->mv_row_min * 8, fcenter_mv.row - MV_MAX);       \
-    maxmv.row = MIN(x->mv_row_max * 8, fcenter_mv.row + MV_MAX);       \
-}
-
-#define SQUARE(a) ((a) * (a))
-
-#define CALCULATE_SSE_VAR(a, b)                                     \
-    c = convert_short8(a) - convert_short8(b);                      \
-    sum = c.s0 + c.s1 + c.s2 + c.s3 +                               \
-          c.s4 + c.s5 + c.s6 + c.s7;                                \
-    barrier(CLK_LOCAL_MEM_FENCE);                                   \
-    intermediate_int[(local_row * LOCAL_STRIDE) + local_col] = sum; \
-    ACCUMULATE(BLOCK_SIZE_IN_PIXELS, intermediate_int)              \
-    barrier(CLK_LOCAL_MEM_FENCE);                                   \
-    sum = intermediate_int[0];                                      \
-    c_squared = convert_int8(c) * convert_int8(c);                  \
-    c_squared.s0123 = c_squared.s0123 + c_squared.s4567;            \
-    c_squared.s01   = c_squared.s01   + c_squared.s23;              \
-    sse = c_squared.s0 + c_squared.s1;                              \
-    barrier(CLK_LOCAL_MEM_FENCE);                                   \
-    intermediate_int[(local_row * LOCAL_STRIDE) + local_col] = sse; \
-    ACCUMULATE(BLOCK_SIZE_IN_PIXELS, intermediate_int)              \
-    barrier(CLK_LOCAL_MEM_FENCE);                                   \
-    sse = intermediate_int[0];                                      \
-    variance = sse - ((long)sum * sum) / (BLOCK_SIZE_IN_PIXELS * BLOCK_SIZE_IN_PIXELS);
 
 #define ACCUMULATE_SUM_SSE_INTER_PRED(sum, sse)                         \
     sum.s0123 = sum.s0123 + sum.s4567;                                  \
@@ -1113,12 +988,15 @@ inline int get_sad(__global uchar *ref_frame, __global uchar *cur_frame,
 #if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
   int local_col  = get_local_id(0);
   int local_row  = get_local_id(1);
+  int sad;
 
   barrier(CLK_LOCAL_MEM_FENCE);
-  intermediate_sad[local_row * LOCAL_STRIDE + local_col] =
-      calculate_sad(&this_mv, ref_frame, cur_frame, stride);
+  intermediate_sad[0] = 0;
 
-  ACCUMULATE_MULTI_ROW(BLOCK_SIZE_IN_PIXELS,intermediate_sad)
+  sad = calculate_sad(&this_mv, ref_frame, cur_frame, stride);
+
+  barrier(CLK_LOCAL_MEM_FENCE);
+  atomic_add(intermediate_sad, sad);
 
   barrier(CLK_LOCAL_MEM_FENCE);
   return intermediate_sad[0];
@@ -1299,18 +1177,16 @@ MV check_better_subpel(__global uchar *ref_frame,
 
 #if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
     barrier(CLK_LOCAL_MEM_FENCE);
-    intermediate_sum[local_row * LOCAL_STRIDE + local_col] = sum;
+    intermediate_sum[0] = 0;
+    intermediate_sum[1] = 0;
 
-    ACCUMULATE_MULTI_ROW(BLOCK_SIZE_IN_PIXELS,intermediate_sum);
+    barrier(CLK_LOCAL_MEM_FENCE);
+    atomic_add(intermediate_sum, sum);
+    atomic_add(intermediate_sum + 1, sse);
+
     barrier(CLK_LOCAL_MEM_FENCE);
     sum = intermediate_sum[0];
-
-    barrier(CLK_LOCAL_MEM_FENCE);
-    intermediate_sse[local_row * LOCAL_STRIDE + local_col] = sse;
-
-    ACCUMULATE_MULTI_ROW(BLOCK_SIZE_IN_PIXELS,intermediate_sse);
-    barrier(CLK_LOCAL_MEM_FENCE);
-    sse = intermediate_sse[0];
+    sse = intermediate_sum[1];
 #endif
 
     thismse = sse - (((long int)sum * sum)
@@ -1434,11 +1310,9 @@ MV vp9_find_best_sub_pixel_tree(__global uchar *ref_frame,
 #if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
                                 __local uchar *fdata3) {
   __local int *intermediate_sum = (__local int *)fdata3;
-  __local uint *intermediate_sse = (__local uint *)fdata3;
 #else
                                 uchar *fdata3) {
   int *intermediate_sum = (int *)fdata3;
-  uint *intermediate_sse = (uint *)fdata3;
 #endif
 
 #if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
@@ -1454,7 +1328,36 @@ MV vp9_find_best_sub_pixel_tree(__global uchar *ref_frame,
   unsigned int sse, besterr;
   MV minmv,maxmv;
 
-  SETUP_SUBPEL_CHECKS
+  hstep = 4;
+  besterr = CL_INT_MAX;
+
+  calculate_fullpel_variance(ref_frame, cur_frame, stride,
+                    &sse, &sum, &best_mv);
+
+#if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
+   barrier(CLK_LOCAL_MEM_FENCE);
+   intermediate_sum[0] = 0;
+   intermediate_sum[1] = 0;
+
+   barrier(CLK_LOCAL_MEM_FENCE);
+   atomic_add(intermediate_sum, sum);
+   atomic_add(intermediate_sum + 1, sse);
+   barrier(CLK_LOCAL_MEM_FENCE);
+   sum = intermediate_sum[0];
+   sse = intermediate_sum[1];
+#endif
+
+  besterr = sse - (((long int)sum * sum)
+                    / (BLOCK_SIZE_IN_PIXELS * BLOCK_SIZE_IN_PIXELS));
+
+  besterr += mv_err_cost(&best_mv, &nearest_mv,
+                         nmvcost_0, nmvcost_1, nmvjointcost,
+                         error_per_bit);
+
+  minmv.col = MAX(x->mv_col_min * 8, fcenter_mv.col - MV_MAX);
+  maxmv.col = MIN(x->mv_col_max * 8, fcenter_mv.col + MV_MAX);
+  minmv.row = MAX(x->mv_row_min * 8, fcenter_mv.row - MV_MAX);
+  maxmv.row = MIN(x->mv_row_max * 8, fcenter_mv.row + MV_MAX);
 
   best_mv = first_level_checks(ref_frame, cur_frame,
                                nmvcost_0, nmvcost_1, nmvjointcost,
@@ -1884,8 +1787,7 @@ void vp9_full_pixel_search(__global uchar *ref_frame,
     __global GPU_OUTPUT *pred_mv
 ) {
 #if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
-  __local uchar8 intermediate_uchar8[(BLOCK_SIZE_IN_PIXELS*(BLOCK_SIZE_IN_PIXELS + 7))/NUM_PIXELS_PER_WORKITEM];
-  __local int *intermediate_int = (__local int *)intermediate_uchar8;
+  __local int intermediate_int[1];
 #else
   __local int *intermediate_int;
 #endif

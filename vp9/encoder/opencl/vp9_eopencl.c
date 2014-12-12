@@ -26,7 +26,7 @@ static const int pixel_rows_per_workitem_log2_inter_pred[GPU_BLOCK_SIZES]
                                                          = {3, 2, 0};
 
 static const int pixel_rows_per_workitem_log2_motion_search[GPU_BLOCK_SIZES]
-                                                                = {5, 3, 3};
+                                                                = {4, 3, 3};
 
 static char *read_src(const char *src_file_name) {
   FILE *fp;
@@ -808,7 +808,7 @@ int vp9_eopencl_init(VP9_COMP *cpi) {
   const char *kernel_file_name= PREFIX_PATH"vp9_pick_inter_mode.cl";
   // TODO(karthick-ittiam) : Fix this hardcoding
   char build_options_combined_motion_search[GPU_BLOCK_SIZES][BUILD_OPTION_LENGTH] = {
-      "-DBLOCK_SIZE_IN_PIXELS=32 -DPIXEL_ROWS_PER_WORKITEM=32 -DINTEL_HD_GRAPHICS=0",
+      "-DBLOCK_SIZE_IN_PIXELS=32 -DPIXEL_ROWS_PER_WORKITEM=16 -DINTEL_HD_GRAPHICS=0",
       "-DBLOCK_SIZE_IN_PIXELS=16 -DPIXEL_ROWS_PER_WORKITEM=8 -DINTEL_HD_GRAPHICS=0",
       "-DBLOCK_SIZE_IN_PIXELS=8 -DPIXEL_ROWS_PER_WORKITEM=8 -DINTEL_HD_GRAPHICS=0"
   };
