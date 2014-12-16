@@ -7,7 +7,7 @@
 ;  in the file PATENTS.  All contributing project authors may
 ;  be found in the AUTHORS file in the root of the source tree.
 ;
-
+    EXPORT  |vp9_quantize_fp_neon|
     EXPORT  |vp9_quantize_fp_32x32_neon|
     EXPORT  |vp9_quantize_b_32x32_neon|
     EXPORT  |vp9_quantize_b_neon|
@@ -89,9 +89,11 @@
     vmov.s16        d2,  d3        ; is different between Row1 and Row3 because
   ENDIF                            ; Row1 would contain the DC coefficient
     vqadd.s16       q6,  q6,  q1
+  IF $quant_type <> fp
     ; copies all the values greater than the threshold
     vbif.16         q5,  q12, q12
     vbif.16         q6,  q13, q13
+  ENDIF
     ; multiplying with  quantization values
     vmull.s16       q7,  d10, d0
   IF $is_first_block = 1           ; In the first 4x4 block, quantization factor
@@ -271,6 +273,13 @@ not_skip_block_$width$quant_type
     vdup.16         q7,    r10
     vadd.s16        q3,    q3,   q7
     vadd.s16        q4,    q4,   q7
+  IF $quant_type = fp
+    vshr.s16        q10, q5,  #15
+    vshr.s16        q11, q6,  #15
+    vabs.s16        q5,  q5
+    vabs.s16        q6,  q6
+    b quantize_first_4x4_block_$width$quant_type
+  ENDIF
     ; threshold first block
     THRESHOLD_4X4_BLOCK 1
     cmp             r10,   #0             ; if all values are below threshold
@@ -321,6 +330,13 @@ process_4x4_$width$quant_type
     ; add 1 to iscan values
     vadd.s16        q3,    q3,   q7
     vadd.s16        q4,    q4,   q7
+  IF $quant_type = fp
+    vshr.s16        q10, q5,  #15
+    vshr.s16        q11, q6,  #15
+    vabs.s16        q5,  q5
+    vabs.s16        q6,  q6
+    b quantize_$width$quant_type
+  ENDIF
     THRESHOLD_4X4_BLOCK 0
     cmp             r10,   #0      ; if all values are less than threshold
     bne             quantize_$width$quant_type
@@ -357,6 +373,10 @@ end_func_$width$quant_type
     vpop            {d8-d15}
     pop             {r4-r12, pc}
     MEND
+
+|vp9_quantize_fp_neon| PROC
+    QUANTIZE 0      fp
+    ENDP
 |vp9_quantize_fp_32x32_neon| PROC
     QUANTIZE 32     fp_32x32
     ENDP
