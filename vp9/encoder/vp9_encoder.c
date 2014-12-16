@@ -1669,9 +1669,28 @@ void vp9_update_reference_frames(VP9_COMP *cpi) {
 #endif
 }
 
-static void loopfilter_frame(VP9_COMP *cpi, VP9_COMMON *cm) {
+static void loopfilter_frame(VP9_COMP *cpi) {
+  VP9_COMMON *const cm = &cpi->common;
   MACROBLOCKD *xd = &cpi->mb.e_mbd;
   struct loopfilter *lf = &cm->lf;
+
+  vp9_pre_loopfilter(cpi);
+
+  if (lf->filter_level > 0) {
+    if (cpi->max_threads > 1)
+      vp9e_loop_filter_frame_mt(cpi, lf->filter_level, 0, 0);
+    else
+      vp9_loop_filter_frame(cm->frame_to_show, cm, xd, lf->filter_level, 0, 0);
+  }
+
+  vp9_post_loopfilter(cm);
+}
+
+void vp9_pre_loopfilter(VP9_COMP *cpi) {
+  VP9_COMMON *const cm = &cpi->common;
+  MACROBLOCKD *xd = &cpi->mb.e_mbd;
+  struct loopfilter *lf = &cm->lf;
+
   if (xd->lossless) {
       lf->filter_level = 0;
   } else {
@@ -1688,12 +1707,11 @@ static void loopfilter_frame(VP9_COMP *cpi, VP9_COMMON *cm) {
   }
 
   if (lf->filter_level > 0) {
-    if (cpi->max_threads > 1)
-      vp9e_loop_filter_frame_mt(cpi, lf->filter_level, 0, 0);
-    else
-      vp9_loop_filter_frame(cm->frame_to_show, cm, xd, lf->filter_level, 0, 0);
+    vp9_loop_filter_frame_init(cm, lf->filter_level);
   }
+}
 
+void vp9_post_loopfilter(VP9_COMMON *cm) {
   vp9_extend_frame_inner_borders(cm->frame_to_show);
 }
 
@@ -2352,6 +2370,8 @@ static void encode_frame_to_data_rate(VP9_COMP *cpi,
     vp9_set_high_precision_mv(cpi, q < HIGH_PRECISION_MV_QTHRESH);
   }
 
+  cm->frame_to_show = get_frame_new_buffer(cm);
+
   if (cpi->sf.recode_loop == DISALLOW_RECODE) {
     encode_without_recode_loop(cpi, q);
   } else {
@@ -2379,10 +2399,13 @@ static void encode_frame_to_data_rate(VP9_COMP *cpi,
   if (cm->frame_type == KEY_FRAME)
     cpi->refresh_last_frame = 1;
 
-  cm->frame_to_show = get_frame_new_buffer(cm);
-
   // Pick the loop filter level for the frame.
-  loopfilter_frame(cpi, cm);
+  if (!cpi->sf.use_nonrd_pick_mode ||
+      frame_is_intra_only(cm) ||
+      cpi->sf.lpf_pick < LPF_PICK_FROM_Q) {
+    loopfilter_frame(cpi);
+  }
+
 
   // build the bitstream
   vp9_pack_bitstream(cpi, dest, size);

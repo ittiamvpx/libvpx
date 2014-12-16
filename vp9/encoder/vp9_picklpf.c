@@ -38,6 +38,10 @@ static int try_filter_frame(const YV12_BUFFER_CONFIG *sd, VP9_COMP *const cpi,
   VP9_COMMON *const cm = &cpi->common;
   int filt_err;
 
+  if (filt_level) {
+    vp9_loop_filter_frame_init(cm, filt_level);
+  }
+
   if (cpi->max_threads > 1)
     vp9e_loop_filter_frame_mt(cpi, filt_level, 1, 0);
   else

@@ -116,6 +116,11 @@ void vp9_loop_filter_rows(YV12_BUFFER_CONFIG *frame_buffer,
                           struct macroblockd_plane planes[MAX_MB_PLANE],
                           int start, int stop, int y_only);
 
+void vp9_loop_filter_sb(YV12_BUFFER_CONFIG *frame_buffer,
+                        struct VP9Common *cm,
+                        struct macroblockd_plane planes[MAX_MB_PLANE],
+                        int mi_row, int mi_col, int y_only);
+
 typedef struct LoopFilterWorkerData {
   YV12_BUFFER_CONFIG *frame_buffer;
   struct VP9Common *cm;

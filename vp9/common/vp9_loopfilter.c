@@ -1193,36 +1193,42 @@ void vp9_filter_block_plane(VP9_COMMON *const cm,
   }
 }
 
-void vp9_loop_filter_rows(YV12_BUFFER_CONFIG *frame_buffer,
-                          VP9_COMMON *cm,
-                          struct macroblockd_plane planes[MAX_MB_PLANE],
-                          int start, int stop, int y_only) {
+void vp9_loop_filter_sb(YV12_BUFFER_CONFIG *frame_buffer,
+                        VP9_COMMON *cm,
+                        struct macroblockd_plane planes[MAX_MB_PLANE],
+                        int mi_row, int mi_col, int y_only) {
   const int num_planes = y_only ? 1 : MAX_MB_PLANE;
   const int use_420 = y_only || (planes[1].subsampling_y == 1 &&
                                  planes[1].subsampling_x == 1);
   LOOP_FILTER_MASK lfm;
+
+  MODE_INFO **mi = cm->mi_grid_visible + mi_row * cm->mi_stride + mi_col;
+
+  int plane;
+
+  vp9_setup_dst_planes(planes, frame_buffer, mi_row, mi_col);
+
+  // TODO(JBB): Make setup_mask work for non 420.
+  if (use_420)
+    vp9_setup_mask(cm, mi_row, mi_col, mi, cm->mi_stride, &lfm);
+
+  for (plane = 0; plane < num_planes; ++plane) {
+    if (use_420)
+      vp9_filter_block_plane(cm, &planes[plane], mi_row, &lfm);
+    else
+      filter_block_plane_non420(cm, &planes[plane], mi, mi_row, mi_col);
+  }
+}
+
+void vp9_loop_filter_rows(YV12_BUFFER_CONFIG *frame_buffer,
+                          VP9_COMMON *cm,
+                          struct macroblockd_plane planes[MAX_MB_PLANE],
+                          int start, int stop, int y_only) {
   int mi_row, mi_col;
 
   for (mi_row = start; mi_row < stop; mi_row += MI_BLOCK_SIZE) {
-    MODE_INFO **mi = cm->mi_grid_visible + mi_row * cm->mi_stride;
-
     for (mi_col = 0; mi_col < cm->mi_cols; mi_col += MI_BLOCK_SIZE) {
-      int plane;
-
-      vp9_setup_dst_planes(planes, frame_buffer, mi_row, mi_col);
-
-      // TODO(JBB): Make setup_mask work for non 420.
-      if (use_420)
-        vp9_setup_mask(cm, mi_row, mi_col, mi + mi_col, cm->mi_stride,
-                       &lfm);
-
-      for (plane = 0; plane < num_planes; ++plane) {
-        if (use_420)
-          vp9_filter_block_plane(cm, &planes[plane], mi_row, &lfm);
-        else
-          filter_block_plane_non420(cm, &planes[plane], mi + mi_col,
-                                    mi_row, mi_col);
-      }
+      vp9_loop_filter_sb(frame_buffer, cm, planes, mi_row, mi_col, y_only);
     }
   }
 }
@@ -1241,7 +1247,6 @@ void vp9_loop_filter_frame(YV12_BUFFER_CONFIG *frame,
     mi_rows_to_filter = MAX(cm->mi_rows / 8, 8);
   }
   end_mi_row = start_mi_row + mi_rows_to_filter;
-  vp9_loop_filter_frame_init(cm, frame_filter_level);
   vp9_loop_filter_rows(frame, cm, xd->plane,
                        start_mi_row, end_mi_row,
                        y_only);

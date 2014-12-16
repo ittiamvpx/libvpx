@@ -3364,6 +3364,13 @@ static void encode_nonrd_sb_row(VP9_COMP *cpi, MACROBLOCK *const x,
 #endif
   }
 
+  if (!x->data_parallel_processing &&
+      mi_row == 0 &&
+      tile->mi_col_start == 0 &&
+      cpi->sf.lpf_pick >= LPF_PICK_FROM_Q) {
+    vp9_pre_loopfilter(cpi);
+  }
+
   // Code each SB in the row
   for (mi_col = tile->mi_col_start; mi_col < tile->mi_col_end;
        mi_col += MI_BLOCK_SIZE) {
@@ -3457,6 +3464,22 @@ static void encode_nonrd_sb_row(VP9_COMP *cpi, MACROBLOCK *const x,
         assert(0);
         break;
     }
+
+    if (cm->lf.filter_level > 0 &&
+        !x->data_parallel_processing &&
+        mi_row >= MI_BLOCK_SIZE &&
+        mi_col >= MI_BLOCK_SIZE &&
+        cpi->sf.lpf_pick >= LPF_PICK_FROM_Q) {
+      // Do a loopfilter of the top-left SB
+      vp9_loop_filter_sb(cm->frame_to_show, cm, x->e_mbd.plane,
+                         mi_row - MI_BLOCK_SIZE, mi_col - MI_BLOCK_SIZE, 0);
+
+      // Do a loopfilter of the top SB
+      if (mi_col + MI_BLOCK_SIZE >= cm->mi_cols) {
+        vp9_loop_filter_sb(cm->frame_to_show, cm, x->e_mbd.plane,
+                           mi_row - MI_BLOCK_SIZE, mi_col, 0);
+      }
+    }
     // In multi-threading, after encoding the SB, make sure this is updated
     // in the cur_sb_col count
     if (cpi->max_threads > 1 &&
@@ -3464,6 +3487,18 @@ static void encode_nonrd_sb_row(VP9_COMP *cpi, MACROBLOCK *const x,
       const int sb_row = mi_row >> MI_BLOCK_SIZE_LOG2;
       vp9_enc_sync_write(cpi, sb_row);
     }
+  }
+
+  if (!x->data_parallel_processing &&
+      mi_row + MI_BLOCK_SIZE >= cm->mi_rows &&
+      tile->mi_col_end >= cm->mi_cols &&
+      cpi->sf.lpf_pick >= LPF_PICK_FROM_Q) {
+    // Do a loopfilter of the last SB row of the frame
+    if (cm->lf.filter_level > 0) {
+      vp9_loop_filter_rows(cm->frame_to_show, cm, x->e_mbd.plane,
+                           mi_row, cm->mi_rows, 0);
+    }
+    vp9_post_loopfilter(cm);
   }
 }
 // end RTC play code

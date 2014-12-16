@@ -288,8 +288,6 @@ void vp9e_loop_filter_frame_mt(VP9_COMP *cpi, int frame_filter_level,
   if (!frame_filter_level)
       return;
 
-  vp9_loop_filter_frame_init(cm, frame_filter_level);
-
   // Initialize cur_sb_col to -1 for all SB rows.
   vpx_memset(cpi->cur_sb_col, -1, sizeof(*cpi->cur_sb_col) * sb_rows);
 
