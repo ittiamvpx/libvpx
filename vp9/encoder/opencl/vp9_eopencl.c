@@ -813,10 +813,10 @@ int vp9_eopencl_init(VP9_COMP *cpi) {
       "-DBLOCK_SIZE_IN_PIXELS=8 -DPIXEL_ROWS_PER_WORKITEM=8 -DINTEL_HD_GRAPHICS=0"
   };
 
-  const char build_options[GPU_BLOCK_SIZES][BUILD_OPTION_LENGTH] = {
-      "-DBLOCK_SIZE_IN_PIXELS=32 -DPIXEL_ROWS_PER_WORKITEM=8",
-      "-DBLOCK_SIZE_IN_PIXELS=16 -DPIXEL_ROWS_PER_WORKITEM=4",
-      "-DBLOCK_SIZE_IN_PIXELS=8 -DPIXEL_ROWS_PER_WORKITEM=1" };
+  char build_options[GPU_BLOCK_SIZES][BUILD_OPTION_LENGTH] = {
+      "-DBLOCK_SIZE_IN_PIXELS=32 -DPIXEL_ROWS_PER_WORKITEM=8 -DINTEL_HD_GRAPHICS=0",
+      "-DBLOCK_SIZE_IN_PIXELS=16 -DPIXEL_ROWS_PER_WORKITEM=4 -DINTEL_HD_GRAPHICS=0",
+      "-DBLOCK_SIZE_IN_PIXELS=8 -DPIXEL_ROWS_PER_WORKITEM=1 -DINTEL_HD_GRAPHICS=0" };
   char *kernel_src = NULL;
   GPU_BLOCK_SIZE gpu_bsize;
 
@@ -920,6 +920,11 @@ int vp9_eopencl_init(VP9_COMP *cpi) {
                                         &status);
     if (status != CL_SUCCESS)
       goto fail;
+
+    if (vendor_id == INTEL_HD_GRAPHICS_ID) {
+      int string_length = strlen(build_options[gpu_bsize]);
+      build_options[gpu_bsize][string_length - 1] = '1';
+    }
 
     // Build the program
     status = clBuildProgram(program, 1, &device, build_options[gpu_bsize],

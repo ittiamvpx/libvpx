@@ -266,6 +266,22 @@ typedef ulong uint64_t;
 
 typedef unsigned short uint16_t;
 
+// Enabling this piece of code causes a crash in Intel HD graphics. But it works
+// fine in Mali GPU. Must be an issue with Intel's driver
+#if !INTEL_HD_GRAPHICS
+
+typedef short2 MV;
+#define row s0
+#define col s1
+
+typedef short4 INIT;
+#define mv_row_min s0
+#define mv_row_max s1
+#define mv_col_min s2
+#define mv_col_max s3
+
+#else
+
 typedef struct mv {
   short row;
   short col;
@@ -279,6 +295,8 @@ struct initvalues {
     int mv_col_min;
     int mv_col_max;
 };
+
+#endif
 
 typedef struct GPU_OUTPUT_STAGE1 {
   MV mv;
