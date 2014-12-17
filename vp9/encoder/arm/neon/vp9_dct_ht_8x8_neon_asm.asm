@@ -43,7 +43,8 @@ cospi_30_64 EQU  1606
 cospi_31_64 EQU   804
 
     ; Do not export DCT8x8 use intrinsics
-    ;EXPORT |vp9_fdct8x8_neon|
+    EXPORT  |vp9_fdct8x8_1_neon|
+    EXPORT  |vp9_fdct8x8_neon|
     EXPORT  |vp9_fht8x8_neon|
 
     ARM
@@ -259,6 +260,56 @@ cospi_31_64 EQU   804
     vtrn.16         q6,     q7
 
     MEND
+    
+;void vp9_fdct8x8_1_neon(const int16_t *input, tran_low_t *output, int stride)
+;
+;   r0  int16_t     *input,
+;   r1  tran_low_t  *out,
+;   r2  int         stride
+;   Computes 2-D cosine transform of an 8x8 block for DC ouput coefficient
+
+|vp9_fdct8x8_1_neon| PROC
+
+    ; Double the stride to accomodate 2 byte data type
+    lsl             r2,     #1
+
+    ; Load the input 8x8 block into q0-q8
+    vld1.s16        {q0},   [r0],   r2
+    vld1.s16        {q1},   [r0],   r2
+    vld1.s16        {q2},   [r0],   r2
+    vld1.s16        {q3},   [r0],   r2
+    vld1.s16        {q8},   [r0],   r2
+    vld1.s16        {q9},   [r0],   r2
+    vld1.s16        {q10},  [r0],   r2
+    vld1.s16        {q11},  [r0]
+    
+    ;Add two rows togather
+    vadd.s16        q12,     q0,     q8
+    vadd.s16        q13,     q1,     q9
+    vadd.s16        q14,     q2,     q10
+    vadd.s16        q15,     q3,     q11
+    
+    vadd.s16        q12,     q12,    q13
+    vadd.s16        q14,     q14,    q15
+    
+    vadd.s16        q12,     q12,    q14
+    
+    ; Now pairwise add between columns
+    ; The results may overflow, this is in sync with C code
+    vmov.s16        d28,     #0
+    vadd.s16        d30,     d24,    d25
+    ; We need to get a zero to s16 d30[1], hence vpadd with d28
+    vpadd.s16       d30,     d30,    d28
+    vpadd.s16       d30,     d30,    d28
+    
+    ; Store the output
+    vst1.s32        d30[0],  [r1]
+    
+    bx              lr
+
+    ; end vp9_fdct8x8_1_neon
+    ENDP
+    
 
 
 ;void vp9_fht8x8_neon(const int16_t *input, tran_low_t *output, int stride,
