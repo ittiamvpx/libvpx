@@ -537,7 +537,7 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
                             &frame_mv[NEARMV][ref_frame]);
 
       if (!vp9_is_scaled(sf) && bsize >= BLOCK_8X8 &&
-          (!x->use_gpu || x->data_parallel_processing))
+          (!x->use_gpu || x->data_parallel_processing || !is_gpu_block))
         vp9_mv_pred(cpi, x, yv12_mb[ref_frame][0].buf, yv12->y_stride,
                     ref_frame, bsize);
     } else {
