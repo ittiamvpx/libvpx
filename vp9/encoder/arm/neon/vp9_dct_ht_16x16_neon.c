@@ -238,16 +238,18 @@ static inline void do_butterfly_symmetric_coeffs(int16x8_t ip1, int16x8_t ip2,
                                                  int16x8_t* op1,
                                                  int16x8_t* op2) {
   const int16x4_t v_constant = vdup_n_s16(constant);
-  const int16x8_t v_sum = vaddq_s16(ip1, ip2);
-  const int16x8_t v_diff = vsubq_s16(ip1, ip2);
-  const int32x4_t v_mul_temp_1 = vmull_s16(vget_high_s16(v_sum), v_constant);
-  const int32x4_t v_mul_temp_2 = vmull_s16(vget_low_s16(v_sum), v_constant);
-  const int32x4_t v_mul_temp_3 = vmull_s16(vget_high_s16(v_diff), v_constant);
-  const int32x4_t v_mul_temp_4 = vmull_s16(vget_low_s16(v_diff), v_constant);
-  const int16x4_t v_temp1 = vqrshrn_n_s32(v_mul_temp_1, 14);
-  const int16x4_t v_temp2 = vqrshrn_n_s32(v_mul_temp_2, 14);
-  const int16x4_t v_temp3 = vqrshrn_n_s32(v_mul_temp_3, 14);
-  const int16x4_t v_temp4 = vqrshrn_n_s32(v_mul_temp_4, 14);
+  const int32x4_t v_mul_temp_1 = vmull_s16(vget_high_s16(ip1), v_constant);
+  const int32x4_t v_mul_temp_2 = vmull_s16(vget_low_s16(ip1), v_constant);
+  const int32x4_t v_mul_temp_3 = vmull_s16(vget_high_s16(ip2), v_constant);
+  const int32x4_t v_mul_temp_4 = vmull_s16(vget_low_s16(ip2), v_constant);
+  const int32x4_t v_sum1 = vaddq_s32(v_mul_temp_1, v_mul_temp_3);
+  const int32x4_t v_sum2 = vaddq_s32(v_mul_temp_2, v_mul_temp_4);
+  const int32x4_t v_diff1 = vsubq_s32(v_mul_temp_1, v_mul_temp_3);
+  const int32x4_t v_diff2 = vsubq_s32(v_mul_temp_2, v_mul_temp_4);
+  const int16x4_t v_temp1 = vqrshrn_n_s32(v_sum1, 14);
+  const int16x4_t v_temp2 = vqrshrn_n_s32(v_sum2, 14);
+  const int16x4_t v_temp3 = vqrshrn_n_s32(v_diff1, 14);
+  const int16x4_t v_temp4 = vqrshrn_n_s32(v_diff2, 14);
   *op1 = vcombine_s16(v_temp2, v_temp1);
   *op2 = vcombine_s16(v_temp4, v_temp3);
 }

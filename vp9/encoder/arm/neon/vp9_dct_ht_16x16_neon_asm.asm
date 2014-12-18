@@ -134,22 +134,28 @@ cospi_31_64 EQU   804
     ; --------------------------------------------------------------------------
     ; Touches q12, q15 and the input registers
     ; valid output registers are anything but q12, q15, $ip1, $ip2
+    ; temp1 and temp2 are Q registers used as temporary registers
+    ; temp1 cannot be same as output registers, q12, q15
+    ; temp2 cannot be same as input  registers, q12, q15
     MACRO
-    DO_BUTTERFLY_SYMMETRIC_COEFFS  $ip1, $ip2, $constant, $op1, $op2, $op3, $op4
+    DO_BUTTERFLY_SYM_COEFFS  $ip1, $ip2, $ip3, $ip4, $constant, $op1, $op2, $op3, $op4, $temp1, $temp2
     ; generate scalar constants
-    mov             r8,    #$constant  & 0xFF00
-    add             r8,    #$constant  & 0x00FF
-    vdup.16         $op4,  r8
-    vadd.s16        q12,   $ip1, $ip2
-    vsub.s16        q15,   $ip1, $ip2
-    vmull.s16       $ip1,  d24,  $op4
-    vmull.s16       $ip2,  d25,  $op4
-    vmull.s16       q12,   d30,  $op4
-    vmull.s16       q15,   d31,  $op4
-    vqrshrn.s32     $op1,  $ip1, #14
-    vqrshrn.s32     $op2,  $ip2, #14
-    vqrshrn.s32     $op3,  q12,  #14
-    vqrshrn.s32     $op4,  q15,  #14
+    mov             r8,     #$constant  & 0xFF00
+    add             r8,     #$constant  & 0x00FF
+    vdup.16         $op4,   r8
+    vmull.s16       q12,    $ip1,  $op4
+    vmull.s16       q15,    $ip3,  $op4
+    vadd.s32        $temp2, q12,   q15
+    vsub.s32        q12,    q12,   q15
+    vqrshrn.s32     $op1,   $temp2,  #14
+    vqrshrn.s32     $op3,   q12,   #14
+    vdup.16         $op4,   r8
+    vmull.s16       q12,    $ip2,  $op4
+    vmull.s16       q15,    $ip4,  $op4
+    vadd.s32        $temp1, q12,   q15
+    vsub.s32        q12,    q12,   q15
+    vqrshrn.s32     $op2,   $temp1,  #14
+    vqrshrn.s32     $op4,   q12,   #14
     MEND
     ; --------------------------------------------------------------------------
     ; Touches q8-q12, q15 (q13-q14 are preserved)
@@ -398,7 +404,7 @@ cospi_31_64 EQU   804
     ; t1 = (x0 - x1) * cospi_16_64;
     ; out[0] = fdct_round_shift(t0);
     ; out[8] = fdct_round_shift(t1);
-    DO_BUTTERFLY_SYMMETRIC_COEFFS q4, q0, cospi_16_64, d2, d3, d4, d5
+    DO_BUTTERFLY_SYM_COEFFS d8, d9, d0, d1, cospi_16_64, d2, d3, d4, d5, q4, q2
     ; t2 = x3 * cospi_8_64  + x2 * cospi_24_64;
     ; t3 = x3 * cospi_24_64 - x2 * cospi_8_64;
     ; out[4] = fdct_round_shift(t2);
@@ -411,7 +417,7 @@ cospi_31_64 EQU   804
     ; t1 = (s6 + s5) * cospi_16_64;
     ; t2 = fdct_round_shift(t0);
     ; t3 = fdct_round_shift(t1);
-    DO_BUTTERFLY_SYMMETRIC_COEFFS q7, q6, cospi_16_64, d6, d7, d26, d27
+    DO_BUTTERFLY_SYM_COEFFS d14, d15, d12, d13, cospi_16_64, d6, d7, d26, d27, q7, q13
 
     ; Stage 3
     DO_BUTTERFLY_NO_COEFFS q5,  q13, q7, q6
@@ -454,13 +460,13 @@ cospi_31_64 EQU   804
     ; temp2 = (step1[5] + step1[2]) * cospi_16_64;
     ; step2[2] = fdct_round_shift(temp1);
     ; step2[5] = fdct_round_shift(temp2);
-    DO_BUTTERFLY_SYMMETRIC_COEFFS q5, q2, cospi_16_64, d26, d27, d28, d29
+    DO_BUTTERFLY_SYM_COEFFS d10 d11, d4, d5 ,cospi_16_64, d26, d27, d28, d29, q5, q14
 
     ; temp2 = (step1[4] - step1[3]) * cospi_16_64;
     ; temp1 = (step1[4] + step1[3]) * cospi_16_64;
     ; step2[3] = fdct_round_shift(temp2);
     ; step2[4] = fdct_round_shift(temp1);
-    DO_BUTTERFLY_SYMMETRIC_COEFFS q4, q3, cospi_16_64, d10, d11, d4, d5
+    DO_BUTTERFLY_SYM_COEFFS d8, d9, d6, d7, cospi_16_64, d10, d11, d4, d5, q4, q2
 
     ; step 3
     DO_BUTTERFLY_NO_COEFFS q0, q2,  q0, q3
@@ -703,7 +709,7 @@ cospi_31_64 EQU   804
     ; s11 = cospi_16_64 * (- x10 + x11);
     ; x10 = fdct_round_shift(s10);
     ; x11 = fdct_round_shift(s11);
-    DO_BUTTERFLY_SYMMETRIC_COEFFS q8, q5, cospi_16_64, d28, d29, d22, d23
+    DO_BUTTERFLY_SYM_COEFFS d16, d17, d10, d11, cospi_16_64, d28, d29, d22, d23, q8, q11
     add             r5,    r5,    r6
     ; output[6] = x10 , store output[2] to intermediate buffer
     vst1.64         {q14}, [r5],  r6
@@ -711,7 +717,7 @@ cospi_31_64 EQU   804
     ; s15 = cospi_16_64 * (x14 - x15);
     ; x14 = fdct_round_shift(s14);
     ; x15 = fdct_round_shift(s15);
-    DO_BUTTERFLY_SYMMETRIC_COEFFS q2, q13, -cospi_16_64, d18, d19, d16, d17
+    DO_BUTTERFLY_SYM_COEFFS d4, d5, d26, d27, -cospi_16_64, d18, d19, d16, d17, q2, q8
     add             r5,    r5,    r6
     ; output[10] = x15 , store output[10] to intermediate buffer
     vst1.64         {q8},  [r5],  r6
@@ -773,7 +779,7 @@ cospi_31_64 EQU   804
     ; s7 = cospi_16_64 * (- x6 + x7);
     ; x6 = fdct_round_shift(s6);
     ; x7 = fdct_round_shift(s7);
-    DO_BUTTERFLY_SYMMETRIC_COEFFS q2, q13, cospi_16_64, d28, d29, d22, d23
+    DO_BUTTERFLY_SYM_COEFFS d4, d5, d26, d27 ,cospi_16_64, d28, d29, d22, d23, q2, q11
     add             r5,    r5,    r6
     ; output[4] = x6 , store output[4] to intermediate buffer
     vst1.64         {q14}, [r5],  r6
@@ -781,7 +787,7 @@ cospi_31_64 EQU   804
     ; s3 = cospi_16_64 * (x2 - x3);
     ; x2 = fdct_round_shift(s2);
     ; x3 = fdct_round_shift(s3)
-    DO_BUTTERFLY_SYMMETRIC_COEFFS q8, q5, -cospi_16_64, d0, d1, d28, d29
+    DO_BUTTERFLY_SYM_COEFFS d16, d17, d10, d11, -cospi_16_64, d0, d1, d28, d29, q8, q14
     add             r5,    r5,    r6
     ; output[8] = x3 , store output[8] to intermediate buffer
     vst1.64         {q14}, [r5],  r6
