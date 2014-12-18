@@ -3347,11 +3347,10 @@ static void encode_nonrd_sb_row(VP9_COMP *cpi, MACROBLOCK *const x,
     }
 #if CONFIG_GPU_COMPUTE
     if (x->use_gpu) {
-      // TODO(ram-ittiam): Make multi-threads wait on events as well.
+      VP9_EGPU *egpu = &cpi->egpu;
+      egpu->enc_sync_read(cpi, subframe_idx);
       if (mi_row == subframe.mi_row_start) {
-        VP9_EGPU *egpu = &cpi->egpu;
         GPU_BLOCK_SIZE gpu_bsize;
-        egpu->enc_sync_read(cpi, subframe_idx);
         for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
           egpu->acquire_output_buffer(cpi, gpu_bsize,
                                       (void **)&cpi->gpu_output_base[gpu_bsize]);

@@ -481,10 +481,6 @@ static void vp9_opencl_enc_sync_read(VP9_COMP *cpi, cl_int event_id) {
   if (status != CL_SUCCESS)
     vpx_internal_error(&cpi->common.error, VPX_CODEC_ERROR,
                        "Wait for event failed");
-  status = clReleaseEvent(eopencl->event[event_id]);
-  if (status != CL_SUCCESS)
-    vpx_internal_error(&cpi->common.error, VPX_CODEC_ERROR,
-                       "Release event failed");
 }
 
 static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
@@ -727,6 +723,12 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   assert(status == CL_SUCCESS);
 
   if (gpu_bsize == GPU_BLOCK_8X8) {
+    if(eopencl->event[subframe_idx] != NULL) {
+      status = clReleaseEvent(eopencl->event[subframe_idx]);
+      eopencl->event[subframe_idx] = NULL;
+      assert(status == CL_SUCCESS);
+    }
+
     status = clEnqueueMarker(opencl->cmd_queue,
                              &eopencl->event[subframe_idx]);
     assert(status == CL_SUCCESS);
@@ -738,12 +740,20 @@ static void vp9_opencl_remove(VP9_COMP *cpi) {
   VP9_EOPENCL *const eopencl = cpi->egpu.compute_framework;
   GPU_BLOCK_SIZE gpu_bsize;
   cl_int status;
-#if OPENCL_PROFILING
   int i;
+#if OPENCL_PROFILING
   cl_ulong total[NUM_KERNELS] = {0};
   cl_ulong grand_total = 0;
   fprintf(stdout, "\nOPENCL PROFILE RESULTS\n");
 #endif
+
+  for(i = 0; i < MAX_SUB_FRAMES; i++) {
+    if(eopencl->event[i] != NULL) {
+      status = clReleaseEvent(eopencl->event[i]);
+      eopencl->event[i] = NULL;
+      assert(status == CL_SUCCESS);
+    }
+  }
 
   for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
 #if OPENCL_PROFILING
