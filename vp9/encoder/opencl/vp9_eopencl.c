@@ -25,7 +25,10 @@
 static const int pixel_rows_per_workitem_log2_inter_pred[GPU_BLOCK_SIZES]
                                                          = {3, 2, 0};
 
-static const int pixel_rows_per_workitem_log2_motion_search[GPU_BLOCK_SIZES]
+static const int pixel_rows_per_workitem_log2_full_pixel[GPU_BLOCK_SIZES]
+                                                                = {3, 2, 3};
+
+static const int pixel_rows_per_workitem_log2_sub_pixel[GPU_BLOCK_SIZES]
                                                                 = {4, 3, 3};
 
 static char *read_src(const char *src_file_name) {
@@ -512,7 +515,8 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   size_t local_size[2];
   size_t global_size[2];
   size_t global_offset[2];
-  size_t local_size_motion_search[2], local_size_inter_pred[2];
+  size_t local_size_full_pixel[2], local_size_sub_pixel[2];
+  size_t local_size_inter_pred[2];
 
   cl_int status = CL_SUCCESS;
 
@@ -619,28 +623,28 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   local_size[0] = b_width_in_pixels / workitem_size[0];
   local_size[1] = b_height_in_pixels / workitem_size[1];
 
-  local_size_motion_search[0] = local_size[0];
-  local_size_motion_search[1] =
-      local_size[1] >> pixel_rows_per_workitem_log2_motion_search[gpu_bsize];
+  local_size_full_pixel[0] = local_size[0];
+  local_size_full_pixel[1] =
+      local_size[1] >> pixel_rows_per_workitem_log2_full_pixel[gpu_bsize];
 
   // total number of workitems
-  global_size[0] = num_block_cols * local_size_motion_search[0];
-  global_size[1] = num_block_rows * local_size_motion_search[1];
+  global_size[0] = num_block_cols * local_size_full_pixel[0];
+  global_size[1] = num_block_rows * local_size_full_pixel[1];
 
   // if the frame is partitioned in to sub-frames, the global work item
   // size is scaled accordingly. the global offset determines the subframe
   // that is being analysed by the gpu.
   global_offset[0] = 0;
-  global_offset[1] = block_row_offset * local_size_motion_search[1];
+  global_offset[1] = block_row_offset * local_size_full_pixel[1];
 
   if (gpu_bsize == GPU_BLOCK_8X8)
-    assert(local_size_motion_search[0] * local_size_motion_search[1] == 1);
+    assert(local_size_full_pixel[0] * local_size_full_pixel[1] == 1);
 
   status = clEnqueueNDRangeKernel(
       opencl->cmd_queue,
       eopencl->full_pixel_search[gpu_bsize], 2,
       global_offset, global_size,
-      ((gpu_bsize == GPU_BLOCK_8X8) ? NULL : local_size_motion_search),
+      ((gpu_bsize == GPU_BLOCK_8X8) ? NULL : local_size_full_pixel),
       0, NULL, event_ptr[0]);
   assert(status == CL_SUCCESS);
 
@@ -661,18 +665,25 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
                                   0, NULL, event_ptr[1]);
   assert(status == CL_SUCCESS);
 
-  global_size[0] = num_block_cols * local_size_motion_search[0];
-  global_size[1] = num_block_rows * local_size_motion_search[1];
+  local_size_sub_pixel[0] = local_size[0];
+  local_size_sub_pixel[1] =
+      local_size[1] >> pixel_rows_per_workitem_log2_sub_pixel[gpu_bsize];
+
+  global_size[0] = num_block_cols * local_size_sub_pixel[0];
+  global_size[1] = num_block_rows * local_size_sub_pixel[1];
 
   global_offset[0] = 0;
-  global_offset[1] = block_row_offset * local_size_motion_search[1];
+  global_offset[1] = block_row_offset * local_size_sub_pixel[1];
+
+  if (gpu_bsize == GPU_BLOCK_8X8)
+    assert(local_size_sub_pixel[0] * local_size_sub_pixel[1] == 1);
 
   // launch sub pixel search kernel
   status = clEnqueueNDRangeKernel(
       opencl->cmd_queue,
       eopencl->sub_pixel_search[gpu_bsize], 2,
       global_offset, global_size,
-      ((gpu_bsize == GPU_BLOCK_8X8) ? NULL : local_size_motion_search),
+      ((gpu_bsize == GPU_BLOCK_8X8) ? NULL : local_size_sub_pixel),
       0, NULL, event_ptr[2]);
   assert(status == CL_SUCCESS);
 
@@ -817,7 +828,13 @@ int vp9_eopencl_init(VP9_COMP *cpi) {
   // TODO(karthick-ittiam) : Pass this prefix path as an input from testbench
   const char *kernel_file_name= PREFIX_PATH"vp9_pick_inter_mode.cl";
   // TODO(karthick-ittiam) : Fix this hardcoding
-  char build_options_combined_motion_search[GPU_BLOCK_SIZES][BUILD_OPTION_LENGTH] = {
+  char build_options_full_pixel_search[GPU_BLOCK_SIZES][BUILD_OPTION_LENGTH] = {
+      "-DBLOCK_SIZE_IN_PIXELS=32 -DPIXEL_ROWS_PER_WORKITEM=8 -DINTEL_HD_GRAPHICS=0",
+      "-DBLOCK_SIZE_IN_PIXELS=16 -DPIXEL_ROWS_PER_WORKITEM=4 -DINTEL_HD_GRAPHICS=0",
+      "-DBLOCK_SIZE_IN_PIXELS=8 -DPIXEL_ROWS_PER_WORKITEM=8 -DINTEL_HD_GRAPHICS=0"
+  };
+
+  char build_options_sub_pixel_search[GPU_BLOCK_SIZES][BUILD_OPTION_LENGTH] = {
       "-DBLOCK_SIZE_IN_PIXELS=32 -DPIXEL_ROWS_PER_WORKITEM=16 -DINTEL_HD_GRAPHICS=0",
       "-DBLOCK_SIZE_IN_PIXELS=16 -DPIXEL_ROWS_PER_WORKITEM=8 -DINTEL_HD_GRAPHICS=0",
       "-DBLOCK_SIZE_IN_PIXELS=8 -DPIXEL_ROWS_PER_WORKITEM=8 -DINTEL_HD_GRAPHICS=0"
@@ -870,13 +887,13 @@ int vp9_eopencl_init(VP9_COMP *cpi) {
       goto fail;
 
     if (vendor_id == INTEL_HD_GRAPHICS_ID) {
-      int string_length = strlen(build_options_combined_motion_search[gpu_bsize]);
-      build_options_combined_motion_search[gpu_bsize][string_length - 1] = '1';
+      int string_length = strlen(build_options_full_pixel_search[gpu_bsize]);
+      build_options_full_pixel_search[gpu_bsize][string_length - 1] = '1';
     }
 
     // Build the program
     status = clBuildProgram(program, 1, &device,
-                            build_options_combined_motion_search[gpu_bsize],
+                            build_options_full_pixel_search[gpu_bsize],
                             NULL, NULL);
     if (status != CL_SUCCESS) {
       // Enable this if you are a OpenCL developer and need to print the build
@@ -911,6 +928,59 @@ int vp9_eopencl_init(VP9_COMP *cpi) {
         program, "vp9_full_pixel_search", &status);
     if (status != CL_SUCCESS)
       goto fail;
+
+    status = clReleaseProgram(program);
+    if (status != CL_SUCCESS)
+      goto fail;
+  }
+
+  for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+
+    program = clCreateProgramWithSource(opencl->context, 1,
+                                        (const char**)(void *)&kernel_src,
+                                        NULL,
+                                        &status);
+    if (status != CL_SUCCESS)
+      goto fail;
+
+    if (vendor_id == INTEL_HD_GRAPHICS_ID) {
+      int string_length = strlen(build_options_sub_pixel_search[gpu_bsize]);
+      build_options_sub_pixel_search[gpu_bsize][string_length - 1] = '1';
+    }
+
+    // Build the program
+    status = clBuildProgram(program, 1, &device,
+                            build_options_sub_pixel_search[gpu_bsize],
+                            NULL, NULL);
+    if (status != CL_SUCCESS) {
+      // Enable this if you are a OpenCL developer and need to print the build
+      // errors of the OpenCL kernel
+#if OPENCL_DEVELOPER_MODE
+      uint8_t *build_log;
+      size_t build_log_size;
+
+      clGetProgramBuildInfo(program,
+                            device,
+                            CL_PROGRAM_BUILD_LOG,
+                            0,
+                            NULL,
+                            &build_log_size);
+      build_log = (uint8_t*)vpx_malloc(build_log_size);
+      if (build_log == NULL)
+        goto fail;
+
+      clGetProgramBuildInfo(program,
+                            device,
+                            CL_PROGRAM_BUILD_LOG,
+                            build_log_size,
+                            build_log,
+                            NULL);
+      build_log[build_log_size-1] = '\0';
+      fprintf(stderr, "Build Log:\n%s\n", build_log);
+      vpx_free(build_log);
+#endif
+      goto fail;
+    }
 
     eopencl->sub_pixel_search[gpu_bsize] = clCreateKernel(
         program, "vp9_sub_pixel_search", &status);
