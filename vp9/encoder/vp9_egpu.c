@@ -291,7 +291,16 @@ static void vp9_gpu_fill_mv_input(VP9_COMP *cpi, const TileInfo * const tile) {
           assert(prev_mi[0] != NULL);
 
           if (prev_mi[0]->mbmi.sb_type != bsize && is_static_area) {
+            const int bsl = mi_width_log2(bsize);
+            const int pred_filter_search = cm->interp_filter == SWITCHABLE ?
+                (((mi_row + mi_col) >> bsl) +
+                 get_chessboard_index(cm->current_video_frame)) & 0x1 : 0;
+            if(pred_filter_search)
+              gpu_input->filter_type = SWITCHABLE;
+            else
+              gpu_input->filter_type = EIGHTTAP;
             gpu_input->do_compute = 0;
+
             continue;
           }
         }

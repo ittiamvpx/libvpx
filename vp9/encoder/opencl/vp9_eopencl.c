@@ -692,7 +692,7 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   local_size_inter_pred[1] =
       local_size[1] >> pixel_rows_per_workitem_log2_inter_pred[gpu_bsize];
 
-  global_size[0] = num_block_cols * local_size_inter_pred[0];
+  global_size[0] = num_block_cols * local_size_inter_pred[0] * 2;
   global_size[1] = num_block_rows * local_size_inter_pred[1];
 
   global_offset[0] = 0;

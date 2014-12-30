@@ -2189,24 +2189,54 @@ void vp9_inter_prediction_and_sse(__global uchar *ref_frame,
   __local uchar8 intermediate_uchar8[(BLOCK_SIZE_IN_PIXELS*(BLOCK_SIZE_IN_PIXELS + 8))/NUM_PIXELS_PER_WORKITEM];
   __local int *intermediate_int = (__local int *)intermediate_uchar8;
 
-  int global_col = get_global_id(0);
   int global_row = get_global_id(1);
-  int global_offset = (global_row * stride * PIXEL_ROWS_PER_WORKITEM) +
-      (global_col * NUM_PIXELS_PER_WORKITEM);
 
   int group_col = get_group_id(0);
   int group_row = get_group_id(1);
-  int group_stride = get_num_groups(0);
+  int group_stride = get_num_groups(0) / 2;
 
   int mi_row, mi_col;
   int sum;
   uint sse, variance;
 
 
-  global_offset += (VP9_ENC_BORDER_IN_PIXELS * stride) + VP9_ENC_BORDER_IN_PIXELS;
-  int group_offset = (group_row * group_stride + group_col);
+  int is_fourth_group = 0;
+  if(group_col % 4 == 3) {
+    group_col -= 2;
+    is_fourth_group = 1;
+  }
+
+  int group_offset = group_row * group_stride + (group_col / 2);
   mv_input      += group_offset;
 
+  int filter_type;
+
+  if (group_col % 2 == 0) {
+    filter_type = EIGHTTAP;
+  } else {
+    if(is_fourth_group == 0)
+      filter_type = EIGHTTAP_SMOOTH;
+    else
+      filter_type = EIGHTTAP_SHARP;
+
+    if(mv_input->filter_type != SWITCHABLE) {
+        group_col += 2;
+        mv_input++;
+    }
+  }
+
+  if(!mv_input->do_compute)
+    goto exit;
+
+  if(!mv_input->do_newmv)
+    goto exit;
+
+  int local_col = get_local_id(0);
+  int global_offset = (global_row * stride * PIXEL_ROWS_PER_WORKITEM) +
+      ((group_col / 2) * BLOCK_SIZE_IN_PIXELS) + (local_col * NUM_PIXELS_PER_WORKITEM);
+  global_offset += (VP9_ENC_BORDER_IN_PIXELS * stride) + VP9_ENC_BORDER_IN_PIXELS;
+
+  group_offset = group_row * group_stride + (group_col / 2);
   sse_variance_output += group_offset;
 
   cur_frame += global_offset;
@@ -2216,14 +2246,9 @@ void vp9_inter_prediction_and_sse(__global uchar *ref_frame,
 
   GPU_OUTPUT_STAGE1 out_mv;
 
-  if(!mv_input->do_compute)
-    goto exit;
-
-  if(!mv_input->do_newmv)
-    goto exit;
 
   mi_row = (global_row * PIXEL_ROWS_PER_WORKITEM) / MI_SIZE;
-  mi_col = global_col;
+  mi_col = (group_col / 2) * (BLOCK_SIZE_IN_PIXELS / MI_SIZE);
 #if BLOCK_SIZE_IN_PIXELS == 32
   mi_row = (mi_row >> 2) << 2;
   mi_col = (mi_col >> 2) << 2;
@@ -2249,29 +2274,13 @@ void vp9_inter_prediction_and_sse(__global uchar *ref_frame,
 
   ref_frame += global_offset + mv_offset;
 
-  int filter_type;
+  if(filter_type != EIGHTTAP && !horz_subpel && !vert_subpel)
+    goto exit;
 
-  filter_type = EIGHTTAP;
   inter_prediction(ref_frame, cur_frame, stride, horz_subpel, vert_subpel,
                           filter_type, intermediate_uchar8,
                           &sse_variance_output->sum[filter_type],
                           &sse_variance_output->sse[filter_type]);
-
-  if(mv_input->filter_type == SWITCHABLE && (horz_subpel || vert_subpel))
-  {
-    filter_type = EIGHTTAP_SMOOTH;
-    inter_prediction(ref_frame, cur_frame, stride, horz_subpel, vert_subpel,
-                            filter_type, intermediate_uchar8,
-                            &sse_variance_output->sum[filter_type],
-                            &sse_variance_output->sse[filter_type]);
-
-    filter_type = EIGHTTAP_SHARP;
-    inter_prediction(ref_frame, cur_frame, stride, horz_subpel, vert_subpel,
-                            filter_type, intermediate_uchar8,
-                            &sse_variance_output->sum[filter_type],
-                            &sse_variance_output->sse[filter_type]);
-
-  }
 
 exit:
   return;
