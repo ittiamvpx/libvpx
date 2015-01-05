@@ -810,7 +810,6 @@ void var_filter_block2d_bil_both(__global uchar *ref_data,
     vsse += convert_uint4(convert_int4(diff.s0123) * convert_int4(diff.s0123));
     vsse += convert_uint4(convert_int4(diff.s4567) * convert_int4(diff.s4567));
 
-
   }
   vsum.s0123 = vsum.s0123 + vsum.s4567;
   vsum.s01 = vsum.s01 + vsum.s23;
@@ -1004,6 +1003,99 @@ inline MV get_best_mv(__global uchar *ref_frame, __global uchar *cur_frame,
   return best_mv;
 }
 
+MV inline full_pixel_pattern_search(__global uchar *ref_frame,
+                                    __global uchar *cur_frame, int stride,
+                                    __local int* intermediate_sad,
+                                    MV best_mv, MV fcenter_mv,
+                                    __global int *nmvsadcost_0,
+                                    __global int *nmvsadcost_1,
+                                    INIT *x, int sad_per_bit,
+                                    int *pbestsad, int pattern)
+{
+  MV this_mv;
+  int best_site = -1;
+  short br, bc;
+  int thissad, bestsad;
+  int i, k;
+  int next_chkpts_indices[PATTERN_CANDIDATES_REF];
+
+  br = best_mv.row;
+  bc = best_mv.col;
+  bestsad = *pbestsad;
+  best_site = -1;
+  if (gpu_check_bounds(x, br, bc, 1 << pattern)) {
+    for (i = 0; i < hex_num_candidates[pattern]; i++) {
+      this_mv.row = br + hex_candidates[pattern][i].row;
+      this_mv.col = bc + hex_candidates[pattern][i].col;
+
+      thissad = get_sad(ref_frame, cur_frame, stride, intermediate_sad, this_mv);
+
+      CHECK_BETTER
+    }
+  } else {
+    for (i = 0; i < hex_num_candidates[pattern]; i++) {
+      this_mv.row = br + hex_candidates[pattern][i].row;
+      this_mv.col = bc + hex_candidates[pattern][i].col;
+
+      if (!is_mv_in(x, &this_mv)) {
+        continue;
+      }
+
+      thissad = get_sad(ref_frame, cur_frame, stride, intermediate_sad, this_mv);
+      CHECK_BETTER
+    }
+  }
+
+  if (best_site == -1) {
+    goto exit;
+  } else {
+    br += hex_candidates[pattern][best_site].row;
+    bc += hex_candidates[pattern][best_site].col;
+    k = best_site;
+  }
+
+  do {
+    best_site = -1;
+    next_chkpts_indices[0] = (k == 0) ? hex_num_candidates[pattern] - 1 : k - 1;
+    next_chkpts_indices[1] = k;
+    next_chkpts_indices[2] = (k == hex_num_candidates[pattern] - 1) ? 0 : k + 1;
+
+    if (gpu_check_bounds(x, br, bc, 1 << pattern)) {
+      for (i = 0; i < PATTERN_CANDIDATES_REF; i++) {
+        this_mv.row = br + hex_candidates[pattern][next_chkpts_indices[i]].row;
+        this_mv.col = bc + hex_candidates[pattern][next_chkpts_indices[i]].col;
+
+        thissad = get_sad(ref_frame, cur_frame, stride, intermediate_sad, this_mv);
+        CHECK_BETTER
+      }
+    } else {
+      for (i = 0; i < PATTERN_CANDIDATES_REF; i++) {
+        this_mv.row = br + hex_candidates[pattern][next_chkpts_indices[i]].row;
+        this_mv.col = bc + hex_candidates[pattern][next_chkpts_indices[i]].col;
+
+        if (!is_mv_in(x, &this_mv)) {
+          continue;
+        }
+
+        thissad = get_sad(ref_frame, cur_frame, stride, intermediate_sad, this_mv);
+        CHECK_BETTER
+      }
+    }
+
+    if (best_site != -1) {
+      k = next_chkpts_indices[best_site];
+      br += hex_candidates[pattern][k].row;
+      bc += hex_candidates[pattern][k].col;
+    }
+  } while(best_site != -1);
+exit:
+  *pbestsad = bestsad;
+  best_mv.row = br;
+  best_mv.col = bc;
+
+  return best_mv;
+}
+
 MV full_pixel_search(__global uchar *ref_frame,
                             __global uchar *cur_frame, int stride,
                             __local int* intermediate_sad,
@@ -1012,12 +1104,6 @@ MV full_pixel_search(__global uchar *ref_frame,
                             __global int *nmvsadcost_1,
                             INIT *x, int sad_per_bit)
 {
-  MV this_mv;
-  int best_site = -1;
-  int i, k;
-  short br, bc;
-  int pattern = 1;
-  int next_chkpts_indices[PATTERN_CANDIDATES_REF];
   int thissad, bestsad;
 
   clamp_gpu_mv(&best_mv, x->mv_col_min, x->mv_col_max,
@@ -1027,81 +1113,22 @@ MV full_pixel_search(__global uchar *ref_frame,
 
   bestsad += mvsad_err_cost(&best_mv, &fcenter_mv, nmvsadcost_0, nmvsadcost_1,
                             sad_per_bit);
-  br = best_mv.row;
-  bc = best_mv.col;
 
-  do {
-    best_site = -1;
-    if (gpu_check_bounds(x,br,bc,1 << pattern)) {
-      for (i = 0; i < hex_num_candidates[pattern]; i++) {
-        this_mv.row = br + hex_candidates[pattern][i].row;
-        this_mv.col = bc + hex_candidates[pattern][i].col;
+  // Search with pattern = 1
+  best_mv = full_pixel_pattern_search(ref_frame, cur_frame, stride,
+                                      intermediate_sad, best_mv, fcenter_mv,
+                                      nmvsadcost_0, nmvsadcost_1,
+                                      x, sad_per_bit,
+                                      &bestsad, 1);
+  // Search with pattern = 0
+  best_mv = full_pixel_pattern_search(ref_frame, cur_frame, stride,
+                                      intermediate_sad, best_mv, fcenter_mv,
+                                      nmvsadcost_0, nmvsadcost_1,
+                                      x, sad_per_bit,
+                                      &bestsad, 0);
 
-        thissad = get_sad(ref_frame, cur_frame, stride, intermediate_sad, this_mv);
-
-        CHECK_BETTER
-      }
-    } else {
-      for (i = 0; i < hex_num_candidates[pattern]; i++) {
-        this_mv.row = br + hex_candidates[pattern][i].row;
-        this_mv.col = bc + hex_candidates[pattern][i].col;
-
-        if (!is_mv_in(x,&this_mv)) {
-          continue;
-        }
-
-        thissad = get_sad(ref_frame, cur_frame, stride, intermediate_sad, this_mv);
-        CHECK_BETTER
-      }
-    }
-
-    if (best_site == -1) {
-      continue;
-    } else {
-      br += hex_candidates[pattern][best_site].row;
-      bc += hex_candidates[pattern][best_site].col;
-      k = best_site;
-    }
-
-    do {
-      best_site = -1;
-      next_chkpts_indices[0] =
-             (k == 0) ? hex_num_candidates[pattern] - 1 : k - 1;
-      next_chkpts_indices[1] = k;
-      next_chkpts_indices[2] =
-             (k == hex_num_candidates[pattern] - 1) ? 0 : k + 1;
-
-      if (gpu_check_bounds(x,br,bc,1 << pattern)) {
-        for (i = 0; i < PATTERN_CANDIDATES_REF; i++) {
-          this_mv.row = br + hex_candidates[pattern][next_chkpts_indices[i]].row;
-          this_mv.col = bc + hex_candidates[pattern][next_chkpts_indices[i]].col;
-
-          thissad = get_sad(ref_frame, cur_frame, stride, intermediate_sad, this_mv);
-          CHECK_BETTER
-        }
-      } else {
-        for (i = 0; i < PATTERN_CANDIDATES_REF; i++) {
-          this_mv.row = br + hex_candidates[pattern][next_chkpts_indices[i]].row;
-          this_mv.col = bc + hex_candidates[pattern][next_chkpts_indices[i]].col;
-
-          if (!is_mv_in(x,&this_mv)) {
-            continue;
-          }
-
-          thissad = get_sad(ref_frame, cur_frame, stride, intermediate_sad, this_mv);
-          CHECK_BETTER
-        }
-      }
-
-      if (best_site != -1) {
-        k = next_chkpts_indices[best_site];
-        br += hex_candidates[pattern][k].row;
-        bc += hex_candidates[pattern][k].col;
-      }
-    } while(best_site != -1);
-  } while(pattern--);
-  best_mv.row = br * 8;
-  best_mv.col = bc * 8;
+  best_mv.row = best_mv.row * 8;
+  best_mv.col = best_mv.col * 8;
   return best_mv;
 }
 
