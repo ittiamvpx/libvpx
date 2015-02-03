@@ -3292,6 +3292,7 @@ static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
             if (rdcost[GPU_BLOCK_32X32] < rdcost_minus_12_point_5_percent) {
               vp9_gpu_set_mvinfo_offsets(cpi, x, actual_mi_row, actual_mi_col,
                                          BLOCK_8X8);
+              x->gpu_output[GPU_BLOCK_8X8]->best_mode = ZEROMV;
               x->gpu_output[GPU_BLOCK_8X8]->best_rd = INT64_MAX;
               continue;
             }

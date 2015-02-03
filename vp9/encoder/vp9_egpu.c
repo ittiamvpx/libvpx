@@ -133,46 +133,47 @@ static void vp9_gpu_fill_rd_parameters(VP9_COMP *cpi, MACROBLOCK *const x) {
   MACROBLOCKD *const xd = &x->e_mbd;
   struct macroblockd_plane *const pd = &xd->plane[0];
   GPU_BLOCK_SIZE gpu_bsize;
+  GPU_RD_PARAMETERS *rd_param_ptr;
   int i;
+
+  egpu->acquire_rd_param_buffer(cpi, (void **)&rd_param_ptr);
+
+  rd_param_ptr->rd_mult = cpi->rd.RDMULT;
+  rd_param_ptr->rd_div = cpi->rd.RDDIV;
+  for (i = 0; i < SWITCHABLE_FILTERS; i++)
+    rd_param_ptr->switchable_interp_costs[i] =
+        cpi->switchable_interp_costs[SWITCHABLE_FILTERS][i];
+  for (i = 0; i < INTER_MODE_CONTEXTS; i++) {
+    rd_param_ptr->inter_mode_cost[i][0] =
+        cpi->inter_mode_cost[i][INTER_OFFSET(ZEROMV)];
+    rd_param_ptr->inter_mode_cost[i][1] =
+        cpi->inter_mode_cost[i][INTER_OFFSET(NEWMV)];
+  }
+  rd_param_ptr->tx_mode = cpi->common.tx_mode;
+  rd_param_ptr->dc_quant = pd->dequant[0];
+  rd_param_ptr->ac_quant = pd->dequant[1];
+  vpx_memcpy(rd_param_ptr->nmvsadcost[0], cpi->mb.nmvsadcost[0] - MV_MAX,
+             sizeof(rd_param_ptr->nmvsadcost[0]));
+  vpx_memcpy(rd_param_ptr->nmvsadcost[1], cpi->mb.nmvsadcost[1] - MV_MAX,
+             sizeof(rd_param_ptr->nmvsadcost[1]));
+  vpx_memcpy(rd_param_ptr->mvcost[0], cpi->mb.mvcost[0] - MV_MAX,
+             sizeof(rd_param_ptr->mvcost[0]));
+  vpx_memcpy(rd_param_ptr->mvcost[1], cpi->mb.mvcost[1] - MV_MAX,
+             sizeof(rd_param_ptr->mvcost[1]));
+  rd_param_ptr->sad_per_bit = cpi->mb.sadperbit16;
+  rd_param_ptr->error_per_bit = cpi->mb.errorperbit;
+  for(i = 0; i < MV_JOINTS; i++) {
+    rd_param_ptr->nmvjointcost[i] = x->nmvjointcost[i];
+  }
 
   for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
     BLOCK_SIZE bsize = get_actual_block_size(gpu_bsize);
-    GPU_RD_PARAMETERS *rd_param_ptr;
-
-    egpu->acquire_rd_param_buffer(cpi, gpu_bsize, (void **)&rd_param_ptr);
-
-    rd_param_ptr->rd_mult = cpi->rd.RDMULT;
-    rd_param_ptr->rd_div = cpi->rd.RDDIV;
-    for (i = 0; i < SWITCHABLE_FILTERS; i++)
-      rd_param_ptr->switchable_interp_costs[i] =
-          cpi->switchable_interp_costs[SWITCHABLE_FILTERS][i];
-    for (i = 0; i < INTER_MODE_CONTEXTS; i++) {
-      rd_param_ptr->inter_mode_cost[i][0] =
-          cpi->inter_mode_cost[i][INTER_OFFSET(ZEROMV)];
-      rd_param_ptr->inter_mode_cost[i][1] =
-          cpi->inter_mode_cost[i][INTER_OFFSET(NEWMV)];
-    }
-    rd_param_ptr->tx_mode = cpi->common.tx_mode;
-    rd_param_ptr->dc_quant = pd->dequant[0];
-    rd_param_ptr->ac_quant = pd->dequant[1];
-    vpx_memcpy(rd_param_ptr->nmvsadcost[0], cpi->mb.nmvsadcost[0] - MV_MAX,
-               sizeof(rd_param_ptr->nmvsadcost[0]));
-    vpx_memcpy(rd_param_ptr->nmvsadcost[1], cpi->mb.nmvsadcost[1] - MV_MAX,
-               sizeof(rd_param_ptr->nmvsadcost[1]));
-    vpx_memcpy(rd_param_ptr->mvcost[0], cpi->mb.mvcost[0] - MV_MAX,
-               sizeof(rd_param_ptr->mvcost[0]));
-    vpx_memcpy(rd_param_ptr->mvcost[1], cpi->mb.mvcost[1] - MV_MAX,
-               sizeof(rd_param_ptr->mvcost[1]));
-    rd_param_ptr->sad_per_bit = cpi->mb.sadperbit16;
-    rd_param_ptr->error_per_bit = cpi->mb.errorperbit;
-    for(i = 0; i < MV_JOINTS; i++) {
-      rd_param_ptr->nmvjointcost[i] = x->nmvjointcost[i];
-    }
 
     // assuming segmentation is disabled and segement id for the frame is '0'
-    vpx_memcpy(rd_param_ptr->threshes, cpi->rd.threshes[0][bsize],
+    vpx_memcpy(rd_param_ptr->threshes[gpu_bsize], cpi->rd.threshes[0][bsize],
                sizeof(cpi->rd.threshes[0][bsize]));
-    rd_param_ptr->thresh_fact_newmv = cpi->rd.thresh_freq_fact[bsize][NEWMV];
+    rd_param_ptr->thresh_fact_newmv[gpu_bsize] =
+        cpi->rd.thresh_freq_fact[bsize][NEWMV];
   }
 }
 

@@ -127,6 +127,14 @@ typedef enum {
   SWITCHABLE = 4  /* should be the last one */
 } INTERP_FILTER;
 
+typedef enum GPU_BLOCK_SIZE {
+  GPU_BLOCK_32X32,
+  GPU_BLOCK_16X16,
+  GPU_BLOCK_8X8,
+  GPU_BLOCK_SIZES,
+  GPU_BLOCK_INVALID = GPU_BLOCK_SIZES
+} GPU_BLOCK_SIZE;
+
 #define NUM_PIXELS_PER_WORKITEM 8
 #define VP9_ENC_BORDER_IN_PIXELS    160
 #define SUBPEL_BITS 3
@@ -334,8 +342,8 @@ typedef struct GPU_RD_PARAMETERS {
   int rd_div;
   int switchable_interp_costs[SWITCHABLE_FILTERS];
   unsigned int inter_mode_cost[INTER_MODE_CONTEXTS][GPU_INTER_MODES];
-  int threshes[MAX_MODES];
-  int thresh_fact_newmv;
+  int threshes[GPU_BLOCK_SIZES][MAX_MODES];
+  int thresh_fact_newmv[GPU_BLOCK_SIZES];
   TX_MODE tx_mode;
   int dc_quant;
   int ac_quant;
@@ -1789,11 +1797,17 @@ void vp9_full_pixel_search(__global uchar *ref_frame,
   MV best_mv,nearest_mv;
 
   global_offset += (VP9_ENC_BORDER_IN_PIXELS * stride) + VP9_ENC_BORDER_IN_PIXELS;
+  
 #if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
-  mv_input            += (group_row * group_stride + group_col);
+  mv_input += (global_row / (BLOCK_SIZE_IN_PIXELS / PIXEL_ROWS_PER_WORKITEM) * 
+      group_stride + group_col);
+#else
+  mv_input += (global_row * global_stride + global_col);
+#endif
+
+#if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
   sse_variance_output += (group_row * group_stride + group_col);
 #else
-  mv_input            += (global_row * global_stride + global_col);
   sse_variance_output += (global_row * global_stride + global_col);
 #endif
 
@@ -1885,10 +1899,13 @@ void vp9_full_pixel_search_zeromv(__global uchar *ref_frame,
 
 #if BLOCK_SIZE_IN_PIXELS == 32
   int bsize = BLOCK_32X32;
+  int gpu_bsize = GPU_BLOCK_32X32;
 #elif BLOCK_SIZE_IN_PIXELS == 16
   int bsize = BLOCK_16X16;
+  int gpu_bsize = GPU_BLOCK_16X16;
 #elif BLOCK_SIZE_IN_PIXELS == 8
   int bsize = BLOCK_8X8;
+  int gpu_bsize = GPU_BLOCK_8X8;
 #endif
 
   mv_input            += (global_row * global_stride + global_col);
@@ -1992,9 +2009,9 @@ void vp9_full_pixel_search_zeromv(__global uchar *ref_frame,
       goto exit;
     }
     int mode_rd_thresh =
-        rd_parameters->threshes[mode_idx[0][INTER_OFFSET(NEWMV)]];
+        rd_parameters->threshes[gpu_bsize][mode_idx[0][INTER_OFFSET(NEWMV)]];
     if (rd_less_than_thresh(best_rd, mode_rd_thresh,
-            rd_parameters->thresh_fact_newmv))
+            rd_parameters->thresh_fact_newmv[gpu_bsize]))
     {
       mv_input->do_newmv = 0;
       goto exit;
@@ -2066,10 +2083,15 @@ void vp9_sub_pixel_search(__global uchar *ref_frame,
                       (global_col * NUM_PIXELS_PER_WORKITEM);
 
 #if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
-  mv_input            += (group_row * group_stride + group_col);
+  mv_input += (global_row / (BLOCK_SIZE_IN_PIXELS / PIXEL_ROWS_PER_WORKITEM) * 
+      group_stride + group_col);
+#else
+  mv_input += (global_row * global_stride + global_col);
+#endif
+
+#if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
   sse_variance_output += (group_row * group_stride + group_col);
 #else
-  mv_input            += (global_row * global_stride + global_col);
   sse_variance_output += (global_row * global_stride + global_col);
 #endif
 
@@ -2162,7 +2184,14 @@ void vp9_inter_prediction_and_sse(__global uchar *ref_frame,
     is_fourth_group = 1;
   }
 
-  int group_offset = group_row * group_stride + (group_col / 2);
+#if BLOCK_SIZE_IN_PIXELS == 32
+  int group_offset = global_row / (BLOCK_SIZE_IN_PIXELS / PIXEL_ROWS_PER_WORKITEM) * group_stride + (group_col / 2);
+#elif BLOCK_SIZE_IN_PIXELS == 16
+  int group_offset = global_row / (BLOCK_SIZE_IN_PIXELS / PIXEL_ROWS_PER_WORKITEM) * group_stride + (group_col / 2);
+#else
+  int group_offset = global_row / (BLOCK_SIZE_IN_PIXELS / PIXEL_ROWS_PER_WORKITEM) * group_stride + (group_col / 2);
+#endif
+
   mv_input      += group_offset;
 
   int filter_type;

@@ -90,6 +90,15 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
   VP9_OPENCL *const opencl = eopencl->opencl;
   cl_int status;
   GPU_BLOCK_SIZE gpu_bsize;
+  opencl_buffer *rdopt_parameters = &eopencl->rdopt_parameters;
+
+  // alloc buffer for gpu rd params
+  rdopt_parameters->size = sizeof(GPU_RD_PARAMETERS);
+  rdopt_parameters->opencl_mem = clCreateBuffer(
+      opencl->context, CL_MEM_READ_ONLY | CL_MEM_ALLOC_HOST_PTR,
+      rdopt_parameters->size, NULL, &status);
+  if (status != CL_SUCCESS)
+    goto fail;
 
   for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
     const BLOCK_SIZE bsize = get_actual_block_size(gpu_bsize);
@@ -98,17 +107,9 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
     const int alloc_size = block_cols * block_rows;
     opencl_buffer *gpuinput_b_args = &eopencl->gpu_input[gpu_bsize];
     opencl_buffer *gpuoutput_b_args = &eopencl->gpu_output[gpu_bsize];
-    opencl_buffer *rdopt_parameters = &eopencl->rdopt_parameters[gpu_bsize];
     int subframe_idx;
 
     // alloc buffer for gpu input
-    rdopt_parameters->size = sizeof(GPU_RD_PARAMETERS);
-    rdopt_parameters->opencl_mem = clCreateBuffer(
-        opencl->context, CL_MEM_READ_ONLY | CL_MEM_ALLOC_HOST_PTR,
-        rdopt_parameters->size, NULL, &status);
-    if (status != CL_SUCCESS)
-      goto fail;
-
     gpuinput_b_args->size = alloc_size * sizeof(GPU_INPUT);
     gpuinput_b_args->opencl_mem = clCreateBuffer(
         opencl->context, CL_MEM_READ_ONLY | CL_MEM_ALLOC_HOST_PTR,
@@ -141,16 +142,6 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
 
       alloc_size_sf = block_cols * block_rows_sf;
 
-      sf_region.origin = block_row_offset * block_cols * sizeof(GPU_INPUT);
-      sf_region.size = alloc_size_sf * sizeof(GPU_INPUT);
-      eopencl->gpu_input_sub_buffer[gpu_bsize][subframe_idx] =
-          clCreateSubBuffer(gpuinput_b_args->opencl_mem,
-                            CL_MEM_READ_ONLY,
-                            CL_BUFFER_CREATE_TYPE_REGION,
-                            &sf_region, &status);
-      if (status != CL_SUCCESS)
-        goto fail;
-
       sf_region.origin = block_row_offset * block_cols * sizeof(GPU_OUTPUT);
       sf_region.size = alloc_size_sf * sizeof(GPU_OUTPUT);
       eopencl->gpu_output_sub_buffer[gpu_bsize][subframe_idx] =
@@ -178,20 +169,32 @@ static void vp9_opencl_free_buffers(VP9_COMP *cpi) {
   cl_int status;
   cl_event event;
   GPU_BLOCK_SIZE gpu_bsize;
+  opencl_buffer *rdopt_parameters = &eopencl->rdopt_parameters;
+
+  if (rdopt_parameters->mapped_pointer != NULL) {
+    status = clEnqueueUnmapMemObject(opencl->cmd_queue,
+                                     rdopt_parameters->opencl_mem,
+                                     rdopt_parameters->mapped_pointer,
+                                     0, NULL, &event);
+    status |= clWaitForEvents(1, &event);
+    if (status != CL_SUCCESS)
+      goto fail;
+    status = clReleaseEvent(event);
+    if (status != CL_SUCCESS)
+      goto fail;
+    rdopt_parameters->mapped_pointer = NULL;
+  }
+  status = clReleaseMemObject(rdopt_parameters->opencl_mem);
+  if (status != CL_SUCCESS)
+    goto fail;
 
   for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
     opencl_buffer *gpu_input = &eopencl->gpu_input[gpu_bsize];
     opencl_buffer *gpu_output = &eopencl->gpu_output[gpu_bsize];
-    opencl_buffer *rdopt_parameters = &eopencl->rdopt_parameters[gpu_bsize];
     int subframe_id;
 
     for (subframe_id = CPU_SUB_FRAMES; subframe_id < MAX_SUB_FRAMES;
          ++subframe_id) {
-      status = clReleaseMemObject(
-          eopencl->gpu_input_sub_buffer[gpu_bsize][subframe_id]);
-      if (status != CL_SUCCESS)
-        goto fail;
-
       status = clReleaseMemObject(
           eopencl->gpu_output_sub_buffer[gpu_bsize][subframe_id]);
       if (status != CL_SUCCESS)
@@ -212,23 +215,6 @@ static void vp9_opencl_free_buffers(VP9_COMP *cpi) {
       gpu_input->mapped_pointer = NULL;
     }
     status = clReleaseMemObject(gpu_input->opencl_mem);
-    if (status != CL_SUCCESS)
-      goto fail;
-
-    if (rdopt_parameters->mapped_pointer != NULL) {
-      status = clEnqueueUnmapMemObject(opencl->cmd_queue,
-                                       rdopt_parameters->opencl_mem,
-                                       rdopt_parameters->mapped_pointer,
-                                       0, NULL, &event);
-      status |= clWaitForEvents(1, &event);
-      if (status != CL_SUCCESS)
-        goto fail;
-      status = clReleaseEvent(event);
-      if (status != CL_SUCCESS)
-        goto fail;
-      rdopt_parameters->mapped_pointer = NULL;
-    }
-    status = clReleaseMemObject(rdopt_parameters->opencl_mem);
     if (status != CL_SUCCESS)
       goto fail;
 
@@ -280,10 +266,9 @@ fail:
 }
 
 static void vp9_opencl_acquire_rd_param_buffer(VP9_COMP *cpi,
-                                               GPU_BLOCK_SIZE gpu_bsize,
                                                void **host_ptr) {
   VP9_EOPENCL *const eopencl = cpi->egpu.compute_framework;
-  opencl_buffer *rdopt_parameters = &eopencl->rdopt_parameters[gpu_bsize];
+  opencl_buffer *rdopt_parameters = &eopencl->rdopt_parameters;
 
   if (!vp9_opencl_acquire_buffer(cpi, &rdopt_parameters->opencl_mem,
                                  rdopt_parameters->size,
@@ -339,11 +324,9 @@ static void vp9_opencl_set_kernel_args(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   GPU_BLOCK_SIZE gpu_parent_bsize = gpu_bsize - 1;
   cl_mem *gpu_ip = &eopencl->gpu_input[gpu_bsize].opencl_mem;
   cl_mem *gpu_op = &eopencl->gpu_output[gpu_bsize].opencl_mem;
-  cl_mem *rdopt_parameters = &eopencl->rdopt_parameters[gpu_bsize].opencl_mem;
+  cl_mem *rdopt_parameters = &eopencl->rdopt_parameters.opencl_mem;
   cl_mem *gpu_op_parent = gpu_bsize != GPU_BLOCK_32X32 ?
       &eopencl->gpu_output[gpu_parent_bsize].opencl_mem : NULL;
-  cl_mem *gpu_ip_subframe =
-      &eopencl->gpu_input_sub_buffer[gpu_bsize][sub_frame_idx];
   cl_mem *gpu_op_subframe =
       &eopencl->gpu_output_sub_buffer[gpu_bsize][sub_frame_idx];
   cl_mem *gpu_op_subframe_parent = gpu_bsize != GPU_BLOCK_32X32 ?
@@ -361,7 +344,7 @@ static void vp9_opencl_set_kernel_args(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   status |= clSetKernelArg(eopencl->full_pixel_search[gpu_bsize], 2,
                            sizeof(cl_int), &y_stride);
   status |= clSetKernelArg(eopencl->full_pixel_search[gpu_bsize], 3,
-                           sizeof(cl_mem), b_is_8x8 ? gpu_ip : gpu_ip_subframe);
+                           sizeof(cl_mem), gpu_ip);
   status |= clSetKernelArg(eopencl->full_pixel_search[gpu_bsize], 4,
                            sizeof(cl_mem), b_is_8x8 ? gpu_op : gpu_op_subframe);
   status |= clSetKernelArg(eopencl->full_pixel_search[gpu_bsize], 5,
@@ -402,7 +385,7 @@ static void vp9_opencl_set_kernel_args(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   status |= clSetKernelArg(eopencl->sub_pixel_search[gpu_bsize], 2,
                            sizeof(cl_int), &y_stride);
   status |= clSetKernelArg(eopencl->sub_pixel_search[gpu_bsize], 3,
-                           sizeof(cl_mem), b_is_8x8 ? gpu_ip : gpu_ip_subframe);
+                           sizeof(cl_mem), gpu_ip);
   status |= clSetKernelArg(eopencl->sub_pixel_search[gpu_bsize], 4,
                            sizeof(cl_mem), b_is_8x8 ? gpu_op : gpu_op_subframe);
   status |= clSetKernelArg(eopencl->sub_pixel_search[gpu_bsize], 5,
@@ -423,7 +406,7 @@ static void vp9_opencl_set_kernel_args(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   status |= clSetKernelArg(eopencl->inter_prediction_and_sse[gpu_bsize], 2,
                            sizeof(cl_int), &y_stride);
   status |= clSetKernelArg(eopencl->inter_prediction_and_sse[gpu_bsize], 3,
-                           sizeof(cl_mem), gpu_ip_subframe);
+                           sizeof(cl_mem), gpu_ip);
   status |= clSetKernelArg(eopencl->inter_prediction_and_sse[gpu_bsize], 4,
                            sizeof(cl_mem), gpu_op_subframe);
   status |= clSetKernelArg(eopencl->inter_prediction_and_sse[gpu_bsize], 5,
@@ -495,7 +478,7 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   const BLOCK_SIZE bsize = get_actual_block_size(gpu_bsize);
   opencl_buffer *gpu_input = &eopencl->gpu_input[gpu_bsize];
   opencl_buffer *gpu_output = &eopencl->gpu_output[gpu_bsize];
-  opencl_buffer *rdopt_parameters = &eopencl->rdopt_parameters[gpu_bsize];
+  opencl_buffer *rdopt_parameters = &eopencl->rdopt_parameters;
   YV12_BUFFER_CONFIG *img_src = cpi->Source;
   YV12_BUFFER_CONFIG *frm_ref = get_ref_frame_buffer(cpi, LAST_FRAME);
 

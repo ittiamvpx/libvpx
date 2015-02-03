@@ -72,8 +72,8 @@ typedef struct GPU_RD_PARAMETERS {
   int rd_div;
   int switchable_interp_costs[SWITCHABLE_FILTERS];
   unsigned int inter_mode_cost[INTER_MODE_CONTEXTS][GPU_INTER_MODES];
-  int threshes[MAX_MODES];
-  int thresh_fact_newmv;
+  int threshes[GPU_BLOCK_SIZES][MAX_MODES];
+  int thresh_fact_newmv[GPU_BLOCK_SIZES];
   TX_MODE tx_mode;
   int dc_quant;
   int ac_quant;
@@ -98,8 +98,7 @@ typedef struct VP9_EGPU {
                                void **host_ptr);
   void (*acquire_output_buffer)(struct VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
                                 void **host_ptr);
-  void (*acquire_rd_param_buffer)(struct VP9_COMP *cpi,
-                                  GPU_BLOCK_SIZE gpu_bsize, void **host_ptr);
+  void (*acquire_rd_param_buffer)(struct VP9_COMP *cpi, void **host_ptr);
   void (*enc_sync_read)(struct VP9_COMP *cpi, int event_id);
   void (*execute)(struct VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
                   int sub_frame_idx);

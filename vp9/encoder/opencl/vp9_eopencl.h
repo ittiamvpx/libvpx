@@ -26,12 +26,11 @@ typedef struct VP9_EOPENCL {
   VP9_OPENCL *opencl;
 
   opencl_buffer gpu_input[GPU_BLOCK_SIZES];
-  cl_mem gpu_input_sub_buffer[GPU_BLOCK_SIZES][MAX_SUB_FRAMES];
 
   opencl_buffer gpu_output[GPU_BLOCK_SIZES];
   cl_mem gpu_output_sub_buffer[GPU_BLOCK_SIZES][MAX_SUB_FRAMES];
 
-  opencl_buffer rdopt_parameters[GPU_BLOCK_SIZES];
+  opencl_buffer rdopt_parameters;
 
   cl_kernel full_pixel_search[GPU_BLOCK_SIZES];
   cl_kernel rd_calculation_zeromv[GPU_BLOCK_SIZES];
