@@ -87,6 +87,57 @@ fail:
   assert(0);
 }
 
+// NOTE : Mapping happens in a different command queue than NDRangeKernel
+int vp9_opencl_map_buffer(VP9_OPENCL *const opencl,
+                          opencl_buffer *opencl_buf,
+                          cl_map_flags map_flags) {
+  cl_int status;
+
+  if (opencl_buf->mapped_pointer == NULL) {
+    opencl_buf->mapped_pointer = clEnqueueMapBuffer(opencl->cmd_queue_memory,
+                                                    opencl_buf->opencl_mem,
+                                                    CL_TRUE,
+                                                    map_flags,
+                                                    0,
+                                                    opencl_buf->size,
+                                                    0, NULL, NULL, &status);
+    if (status != CL_SUCCESS)
+      goto fail;
+  }
+  return 0;
+
+fail:
+  return 1;
+}
+
+// NOTE : Unmapping happens in the same command queue as NDRangeKernel
+int vp9_opencl_unmap_buffer(VP9_OPENCL *const opencl,
+                            opencl_buffer *opencl_buf,
+                            cl_bool is_blocking) {
+  cl_int status;
+
+
+  if (opencl_buf->mapped_pointer != NULL) {
+    status = clEnqueueUnmapMemObject(opencl->cmd_queue,
+                                     opencl_buf->opencl_mem,
+                                     opencl_buf->mapped_pointer,
+                                     0, NULL, NULL);
+    opencl_buf->mapped_pointer = NULL;
+    if (status != CL_SUCCESS)
+      goto fail;
+
+    if(is_blocking == CL_TRUE) {
+      status = clFinish(opencl->cmd_queue);
+      if (status != CL_SUCCESS)
+        goto fail;
+    }
+  }
+  return 0;
+
+fail:
+  return 1;
+}
+
 static void vp9_opencl_remove(VP9_COMMON *cm) {
   VP9_OPENCL *opencl = cm->gpu.compute_framework;
   cl_int status;

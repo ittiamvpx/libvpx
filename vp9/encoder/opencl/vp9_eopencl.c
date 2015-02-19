@@ -106,7 +106,6 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
     const int block_rows = (cm->sb_rows * num_mxn_blocks_high_lookup[bsize]);
     const int alloc_size = block_cols * block_rows;
     opencl_buffer *gpuinput_b_args = &eopencl->gpu_input[gpu_bsize];
-    opencl_buffer *gpuoutput_b_args = &eopencl->gpu_output[gpu_bsize];
     int subframe_idx;
 
     // alloc buffer for gpu input
@@ -118,14 +117,13 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
       goto fail;
 
     // alloc buffer for gpu output
-    gpuoutput_b_args->size = alloc_size * sizeof(GPU_OUTPUT);
-    gpuoutput_b_args->opencl_mem = clCreateBuffer(
+    eopencl->gpu_output[gpu_bsize] = clCreateBuffer(
         opencl->context, CL_MEM_WRITE_ONLY | CL_MEM_ALLOC_HOST_PTR,
-        gpuoutput_b_args->size, NULL, &status);
+        alloc_size * sizeof(GPU_OUTPUT), NULL, &status);
     if (status != CL_SUCCESS)
       goto fail;
 
-    // create sub buffers
+    // create output sub buffers
     for (subframe_idx = CPU_SUB_FRAMES; subframe_idx < MAX_SUB_FRAMES;
          ++subframe_idx) {
       cl_buffer_region sf_region;
@@ -144,8 +142,10 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
 
       sf_region.origin = block_row_offset * block_cols * sizeof(GPU_OUTPUT);
       sf_region.size = alloc_size_sf * sizeof(GPU_OUTPUT);
-      eopencl->gpu_output_sub_buffer[gpu_bsize][subframe_idx] =
-          clCreateSubBuffer(gpuoutput_b_args->opencl_mem,
+      eopencl->gpu_output_sub_buffer[gpu_bsize][subframe_idx].size =
+          sf_region.size;
+      eopencl->gpu_output_sub_buffer[gpu_bsize][subframe_idx].opencl_mem =
+          clCreateSubBuffer(eopencl->gpu_output[gpu_bsize],
                             CL_MEM_WRITE_ONLY,
                             CL_BUFFER_CREATE_TYPE_REGION,
                             &sf_region, &status);
@@ -167,22 +167,11 @@ static void vp9_opencl_free_buffers(VP9_COMP *cpi) {
   VP9_EOPENCL *eopencl = cpi->egpu.compute_framework;
   VP9_OPENCL *const opencl = eopencl->opencl;
   cl_int status;
-  cl_event event;
   GPU_BLOCK_SIZE gpu_bsize;
   opencl_buffer *rdopt_parameters = &eopencl->rdopt_parameters;
 
-  if (rdopt_parameters->mapped_pointer != NULL) {
-    status = clEnqueueUnmapMemObject(opencl->cmd_queue,
-                                     rdopt_parameters->opencl_mem,
-                                     rdopt_parameters->mapped_pointer,
-                                     0, NULL, &event);
-    status |= clWaitForEvents(1, &event);
-    if (status != CL_SUCCESS)
-      goto fail;
-    status = clReleaseEvent(event);
-    if (status != CL_SUCCESS)
-      goto fail;
-    rdopt_parameters->mapped_pointer = NULL;
+  if (vp9_opencl_unmap_buffer(opencl, rdopt_parameters, CL_TRUE)) {
+    goto fail;
   }
   status = clReleaseMemObject(rdopt_parameters->opencl_mem);
   if (status != CL_SUCCESS)
@@ -190,48 +179,31 @@ static void vp9_opencl_free_buffers(VP9_COMP *cpi) {
 
   for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
     opencl_buffer *gpu_input = &eopencl->gpu_input[gpu_bsize];
-    opencl_buffer *gpu_output = &eopencl->gpu_output[gpu_bsize];
     int subframe_id;
 
     for (subframe_id = CPU_SUB_FRAMES; subframe_id < MAX_SUB_FRAMES;
          ++subframe_id) {
+      opencl_buffer *gpu_output_sub_buffer =
+          &eopencl->gpu_output_sub_buffer[gpu_bsize][subframe_id];
+
+      if (vp9_opencl_unmap_buffer(opencl, gpu_output_sub_buffer, CL_TRUE)) {
+        goto fail;
+      }
       status = clReleaseMemObject(
-          eopencl->gpu_output_sub_buffer[gpu_bsize][subframe_id]);
+          eopencl->gpu_output_sub_buffer[gpu_bsize][subframe_id].opencl_mem);
       if (status != CL_SUCCESS)
         goto fail;
     }
 
-    if (gpu_input->mapped_pointer != NULL) {
-      status = clEnqueueUnmapMemObject(opencl->cmd_queue,
-                                       gpu_input->opencl_mem,
-                                       gpu_input->mapped_pointer,
-                                       0, NULL, &event);
-      status |= clWaitForEvents(1, &event);
-      if (status != CL_SUCCESS)
-        goto fail;
-      status = clReleaseEvent(event);
-      if (status != CL_SUCCESS)
-        goto fail;
-      gpu_input->mapped_pointer = NULL;
+
+    if (vp9_opencl_unmap_buffer(opencl, gpu_input, CL_TRUE)) {
+      goto fail;
     }
     status = clReleaseMemObject(gpu_input->opencl_mem);
     if (status != CL_SUCCESS)
       goto fail;
 
-    if (gpu_output->mapped_pointer != NULL) {
-      status = clEnqueueUnmapMemObject(opencl->cmd_queue,
-                                       gpu_output->opencl_mem,
-                                       gpu_output->mapped_pointer,
-                                       0, NULL, &event);
-      status |= clWaitForEvents(1, &event);
-      if (status != CL_SUCCESS)
-        goto fail;
-      status = clReleaseEvent(event);
-      if (status != CL_SUCCESS)
-        goto fail;
-      gpu_output->mapped_pointer = NULL;
-    }
-    status = clReleaseMemObject(gpu_output->opencl_mem);
+    status = clReleaseMemObject(eopencl->gpu_output[gpu_bsize]);
     if (status != CL_SUCCESS)
       goto fail;
   }
@@ -245,34 +217,12 @@ fail:
   assert(0);
 }
 
-static int vp9_opencl_acquire_buffer(VP9_COMP *cpi, cl_mem *opencl_mem,
-                                     size_t size, void **mapped_pointer) {
-  VP9_EOPENCL *const eopencl = cpi->egpu.compute_framework;
-  VP9_OPENCL *const opencl = eopencl->opencl;
-  cl_int status;
-
-  if (*mapped_pointer == NULL) {
-    *mapped_pointer =
-        clEnqueueMapBuffer(opencl->cmd_queue_memory, *opencl_mem, CL_TRUE,
-                           CL_MAP_READ | CL_MAP_WRITE, 0, size, 0, NULL, NULL,
-                           &status);
-    if (status != CL_SUCCESS)
-      goto fail;
-  }
-  return 0;
-
-fail:
-  return 1;
-}
-
 static void vp9_opencl_acquire_rd_param_buffer(VP9_COMP *cpi,
                                                void **host_ptr) {
   VP9_EOPENCL *const eopencl = cpi->egpu.compute_framework;
   opencl_buffer *rdopt_parameters = &eopencl->rdopt_parameters;
 
-  if (!vp9_opencl_acquire_buffer(cpi, &rdopt_parameters->opencl_mem,
-                                 rdopt_parameters->size,
-                                 &rdopt_parameters->mapped_pointer)) {
+  if (!vp9_opencl_map_buffer(eopencl->opencl, rdopt_parameters, CL_MAP_WRITE)) {
     *host_ptr = rdopt_parameters->mapped_pointer;
     return;
   }
@@ -287,9 +237,7 @@ static void vp9_opencl_acquire_input_buffer(VP9_COMP *cpi,
   VP9_EOPENCL *const eopencl = cpi->egpu.compute_framework;
   opencl_buffer *gpu_input = &eopencl->gpu_input[gpu_bsize];
 
-  if (!vp9_opencl_acquire_buffer(cpi, &gpu_input->opencl_mem,
-                                 gpu_input->size,
-                                 &gpu_input->mapped_pointer)) {
+  if (!vp9_opencl_map_buffer(eopencl->opencl, gpu_input, CL_MAP_WRITE)) {
     *host_ptr = gpu_input->mapped_pointer;
     return;
   }
@@ -300,14 +248,14 @@ static void vp9_opencl_acquire_input_buffer(VP9_COMP *cpi,
 
 static void vp9_opencl_acquire_output_buffer(VP9_COMP *cpi,
                                              GPU_BLOCK_SIZE gpu_bsize,
-                                             void **host_ptr) {
-  VP9_EOPENCL *const opencl = cpi->egpu.compute_framework;
-  opencl_buffer *gpu_output = &opencl->gpu_output[gpu_bsize];
+                                             void **host_ptr,
+                                             int sub_frame_idx) {
+  VP9_EOPENCL *const eopencl = cpi->egpu.compute_framework;
+  opencl_buffer *gpu_output_sub_buffer =
+      &eopencl->gpu_output_sub_buffer[gpu_bsize][sub_frame_idx];
 
-  if (!vp9_opencl_acquire_buffer(cpi, &gpu_output->opencl_mem,
-                                 gpu_output->size,
-                                 &gpu_output->mapped_pointer)) {
-    *host_ptr = gpu_output->mapped_pointer;
+  if (!vp9_opencl_map_buffer(eopencl->opencl, gpu_output_sub_buffer, CL_MAP_READ)) {
+    *host_ptr = gpu_output_sub_buffer->mapped_pointer;
     return;
   }
 
@@ -323,14 +271,14 @@ static void vp9_opencl_set_kernel_args(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   YV12_BUFFER_CONFIG *frm_ref = get_ref_frame_buffer(cpi, LAST_FRAME);
   GPU_BLOCK_SIZE gpu_parent_bsize = gpu_bsize - 1;
   cl_mem *gpu_ip = &eopencl->gpu_input[gpu_bsize].opencl_mem;
-  cl_mem *gpu_op = &eopencl->gpu_output[gpu_bsize].opencl_mem;
+  cl_mem *gpu_op = &eopencl->gpu_output[gpu_bsize];
   cl_mem *rdopt_parameters = &eopencl->rdopt_parameters.opencl_mem;
   cl_mem *gpu_op_parent = gpu_bsize != GPU_BLOCK_32X32 ?
-      &eopencl->gpu_output[gpu_parent_bsize].opencl_mem : NULL;
+      &eopencl->gpu_output[gpu_parent_bsize] : NULL;
   cl_mem *gpu_op_subframe =
-      &eopencl->gpu_output_sub_buffer[gpu_bsize][sub_frame_idx];
+      &eopencl->gpu_output_sub_buffer[gpu_bsize][sub_frame_idx].opencl_mem;
   cl_mem *gpu_op_subframe_parent = gpu_bsize != GPU_BLOCK_32X32 ?
-      &eopencl->gpu_output_sub_buffer[gpu_parent_bsize][sub_frame_idx] : NULL;
+      &eopencl->gpu_output_sub_buffer[gpu_parent_bsize][sub_frame_idx].opencl_mem : NULL;
   cl_int mi_rows = cm->mi_rows;
   cl_int mi_cols = cm->mi_cols;
   cl_int y_stride = cm->frame_bufs[0].buf.y_stride;
@@ -443,15 +391,15 @@ static void vp9_opencl_set_kernel_args(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
     status = clSetKernelArg(eopencl->vp9_is_8x8_required, 0, sizeof(cl_mem),
                             &eopencl->gpu_input[GPU_BLOCK_32X32].opencl_mem);
     status |= clSetKernelArg(eopencl->vp9_is_8x8_required, 1, sizeof(cl_mem),
-                             &eopencl->gpu_output[GPU_BLOCK_32X32].opencl_mem);
+                             &eopencl->gpu_output[GPU_BLOCK_32X32]);
     status |= clSetKernelArg(eopencl->vp9_is_8x8_required, 2, sizeof(cl_mem),
                              &eopencl->gpu_input[GPU_BLOCK_16X16].opencl_mem);
     status |= clSetKernelArg(eopencl->vp9_is_8x8_required, 3, sizeof(cl_mem),
-                             &eopencl->gpu_output[GPU_BLOCK_16X16].opencl_mem);
+                             &eopencl->gpu_output[GPU_BLOCK_16X16]);
     status |= clSetKernelArg(eopencl->vp9_is_8x8_required, 4, sizeof(cl_mem),
                              &eopencl->gpu_input[GPU_BLOCK_8X8].opencl_mem);
     status |= clSetKernelArg(eopencl->vp9_is_8x8_required, 5, sizeof(cl_mem),
-                             &eopencl->gpu_output[GPU_BLOCK_8X8].opencl_mem);
+                             &eopencl->gpu_output[GPU_BLOCK_8X8]);
     status |= clSetKernelArg(eopencl->vp9_is_8x8_required, 6, sizeof(cl_mem),
                              rdopt_parameters);
     assert(status == CL_SUCCESS);
@@ -477,7 +425,8 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   VP9_COMMON *const cm = &cpi->common;
   const BLOCK_SIZE bsize = get_actual_block_size(gpu_bsize);
   opencl_buffer *gpu_input = &eopencl->gpu_input[gpu_bsize];
-  opencl_buffer *gpu_output = &eopencl->gpu_output[gpu_bsize];
+  opencl_buffer *gpu_output_sub_buffer =
+      &eopencl->gpu_output_sub_buffer[gpu_bsize][subframe_idx];
   opencl_buffer *rdopt_parameters = &eopencl->rdopt_parameters;
   YV12_BUFFER_CONFIG *img_src = cpi->Source;
   YV12_BUFFER_CONFIG *frm_ref = get_ref_frame_buffer(cpi, LAST_FRAME);
@@ -536,32 +485,16 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
 
   (void)status;
 
-  if (rdopt_parameters->mapped_pointer != NULL) {
-    status = clEnqueueUnmapMemObject(opencl->cmd_queue,
-                                     rdopt_parameters->opencl_mem,
-                                     rdopt_parameters->mapped_pointer,
-                                     0, NULL, NULL);
-    assert(status == CL_SUCCESS);
-    rdopt_parameters->mapped_pointer = NULL;
+  if (vp9_opencl_unmap_buffer(opencl, rdopt_parameters, CL_FALSE)) {
+    assert(0);
   }
 
-  if (gpu_input->mapped_pointer != NULL) {
-    status = clEnqueueUnmapMemObject(opencl->cmd_queue,
-                                     gpu_input->opencl_mem,
-                                     gpu_input->mapped_pointer,
-                                     0, NULL, NULL);
-    assert(status == CL_SUCCESS);
-    gpu_input->mapped_pointer = NULL;
+  if (vp9_opencl_unmap_buffer(opencl, gpu_input, CL_FALSE)) {
+    assert(0);
   }
 
-  if (gpu_output->mapped_pointer != NULL) {
-    status = clEnqueueUnmapMemObject(opencl->cmd_queue,
-                                     gpu_output->opencl_mem,
-                                     gpu_output->mapped_pointer,
-                                     0, NULL, NULL);
-    assert(status == CL_SUCCESS);
-    gpu_output->mapped_pointer = NULL;
-    cpi->gpu_output_base[gpu_bsize] = NULL;
+  if (vp9_opencl_unmap_buffer(opencl, gpu_output_sub_buffer, CL_FALSE)) {
+    assert(0);
   }
 
   if (img_src->buffer_alloc != NULL) {

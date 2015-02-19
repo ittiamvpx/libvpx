@@ -56,7 +56,7 @@ void vp9_gpu_set_mvinfo_offsets(VP9_COMP *const cpi, MACROBLOCK *const x,
 
   if (gpu_bsize != GPU_BLOCK_INVALID)
     x->gpu_output[gpu_bsize] = cpi->gpu_output_base[gpu_bsize] +
-    (block_index_row * blocks_in_row) + block_index_col;
+      (block_index_row * blocks_in_row) + block_index_col;
 }
 
 void vp9_find_mv_refs_rt(const VP9_COMMON *cm, const MACROBLOCK *x,
@@ -78,13 +78,12 @@ void vp9_subframe_init(SubFrameInfo *subframe, const VP9_COMMON *cm, int idx) {
   subframe->mi_row_end = get_subframe_offset(idx + 1, cm->mi_rows, cm->sb_rows);
 }
 
-int vp9_get_subframe_index(SubFrameInfo *subframe, const VP9_COMMON *cm,
-                           int mi_row) {
+int vp9_get_subframe_index(const VP9_COMMON *cm, int mi_row) {
   int idx;
 
   for (idx = 0; idx < MAX_SUB_FRAMES; ++idx) {
-    vp9_subframe_init(subframe, cm, idx);
-    if (mi_row >= subframe->mi_row_start && mi_row < subframe->mi_row_end) {
+    int mi_row_end = get_subframe_offset(idx + 1, cm->mi_rows, cm->sb_rows);
+    if (mi_row < mi_row_end) {
       break;
     }
   }
@@ -242,10 +241,9 @@ static void vp9_gpu_fill_mv_input(VP9_COMP *cpi, const TileInfo * const tile) {
   if (!sf->partition_check) {
     for (mi_row = tile->mi_row_start; mi_row < tile->mi_row_end; mi_row +=
         MI_BLOCK_SIZE) {
-      SubFrameInfo subframe;
       int subframe_idx;
 
-      subframe_idx = vp9_get_subframe_index(&subframe, cm, mi_row);
+      subframe_idx = vp9_get_subframe_index(cm, mi_row);
       if (subframe_idx < CPU_SUB_FRAMES)
         continue;
 
@@ -270,10 +268,9 @@ static void vp9_gpu_fill_mv_input(VP9_COMP *cpi, const TileInfo * const tile) {
 
     for (mi_row = tile->mi_row_start; mi_row < tile->mi_row_end; mi_row +=
         mi_row_step) {
-      SubFrameInfo subframe;
       int subframe_idx;
 
-      subframe_idx = vp9_get_subframe_index(&subframe, cm, mi_row);
+      subframe_idx = vp9_get_subframe_index(cm, mi_row);
       if (subframe_idx < CPU_SUB_FRAMES)
         continue;
 

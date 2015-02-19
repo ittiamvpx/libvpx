@@ -3328,7 +3328,7 @@ static void encode_nonrd_sb_row(VP9_COMP *cpi, MACROBLOCK *const x,
   // dependencies are met
   if (cm->use_gpu) {
     SubFrameInfo subframe;
-    int subframe_idx;
+    int subframe_idx = vp9_get_subframe_index(cm, mi_row);
 
     // GPU ME compute analysis of the input image is done in parts.
 
@@ -3340,7 +3340,7 @@ static void encode_nonrd_sb_row(VP9_COMP *cpi, MACROBLOCK *const x,
     // To avoid this, the first/first-few sub frames are run directly on CPU.
     // While CPU is encoding first few sub frames, GPU can process the
     // remaining sections and send the output in time for CPU.
-    subframe_idx = vp9_get_subframe_index(&subframe, cm, mi_row);
+    vp9_subframe_init(&subframe, cm, subframe_idx);
     if (subframe_idx < CPU_SUB_FRAMES) {
       x->use_gpu = 0;
     } else {
@@ -3353,8 +3353,28 @@ static void encode_nonrd_sb_row(VP9_COMP *cpi, MACROBLOCK *const x,
       if (mi_row == subframe.mi_row_start) {
         GPU_BLOCK_SIZE gpu_bsize;
         for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+          GPU_OUTPUT *gpu_output_subframe;
           egpu->acquire_output_buffer(cpi, gpu_bsize,
-                                      (void **)&cpi->gpu_output_base[gpu_bsize]);
+                                      (void **)&gpu_output_subframe,
+                                      subframe_idx);
+
+          if(subframe_idx == 0) {
+            cpi->gpu_output_base[gpu_bsize] = gpu_output_subframe;
+          } else {
+            // Check if the acquired memory pointer for the given subframe is
+            // contiguous with respect to the previous subframes
+            BLOCK_SIZE bsize = get_actual_block_size(gpu_bsize);
+            const int blocks_in_row =
+                (cm->sb_cols * num_mxn_blocks_wide_lookup[bsize]);
+            const int block_index_row =
+                (subframe.mi_row_start >> mi_height_log2(bsize));
+
+            (void)blocks_in_row;
+            (void)block_index_row;
+
+            assert(gpu_output_subframe - cpi->gpu_output_base[gpu_bsize] ==
+                   block_index_row * blocks_in_row);
+          }
         }
       }
     }

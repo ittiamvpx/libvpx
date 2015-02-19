@@ -97,7 +97,7 @@ typedef struct VP9_EGPU {
   void (*acquire_input_buffer)(struct VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
                                void **host_ptr);
   void (*acquire_output_buffer)(struct VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
-                                void **host_ptr);
+                                void **host_ptr, int sub_frame_idx);
   void (*acquire_rd_param_buffer)(struct VP9_COMP *cpi, void **host_ptr);
   void (*enc_sync_read)(struct VP9_COMP *cpi, int event_id);
   void (*execute)(struct VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
@@ -135,8 +135,7 @@ void vp9_find_mv_refs_rt(const VP9_COMMON *cm, const struct macroblock *x,
                          int mi_row, int mi_col);
 
 void vp9_subframe_init(SubFrameInfo *subframe, const VP9_COMMON *cm, int row);
-int vp9_get_subframe_index(SubFrameInfo *subframe, const VP9_COMMON *cm,
-                           int mi_row);
+int vp9_get_subframe_index(const VP9_COMMON *cm, int mi_row);
 
 #if !CONFIG_GPU_COMPUTE
 

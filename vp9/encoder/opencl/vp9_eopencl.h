@@ -27,8 +27,8 @@ typedef struct VP9_EOPENCL {
 
   opencl_buffer gpu_input[GPU_BLOCK_SIZES];
 
-  opencl_buffer gpu_output[GPU_BLOCK_SIZES];
-  cl_mem gpu_output_sub_buffer[GPU_BLOCK_SIZES][MAX_SUB_FRAMES];
+  cl_mem gpu_output[GPU_BLOCK_SIZES];
+  opencl_buffer gpu_output_sub_buffer[GPU_BLOCK_SIZES][MAX_SUB_FRAMES];
 
   opencl_buffer rdopt_parameters;
 
