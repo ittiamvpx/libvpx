@@ -100,7 +100,7 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
   if (status != CL_SUCCESS)
     goto fail;
 
-  for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+  for (gpu_bsize = 0; gpu_bsize < BLOCKS_PROCESSED_ON_GPU; gpu_bsize++) {
     const BLOCK_SIZE bsize = get_actual_block_size(gpu_bsize);
     const int block_cols = (cm->sb_cols * num_mxn_blocks_wide_lookup[bsize]);
     const int block_rows = (cm->sb_rows * num_mxn_blocks_high_lookup[bsize]);
@@ -177,7 +177,7 @@ static void vp9_opencl_free_buffers(VP9_COMP *cpi) {
   if (status != CL_SUCCESS)
     goto fail;
 
-  for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+  for (gpu_bsize = 0; gpu_bsize < BLOCKS_PROCESSED_ON_GPU; gpu_bsize++) {
     opencl_buffer *gpu_input = &eopencl->gpu_input[gpu_bsize];
     int subframe_id;
 
@@ -649,8 +649,8 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   status = clFlush(opencl->cmd_queue);
   assert(status == CL_SUCCESS);
 
-  if (gpu_bsize == GPU_BLOCK_8X8) {
-    if(eopencl->event[subframe_idx] != NULL) {
+  if (gpu_bsize == LAST_GPU_BLOCK_SIZE) {
+    if (eopencl->event[subframe_idx] != NULL) {
       status = clReleaseEvent(eopencl->event[subframe_idx]);
       eopencl->event[subframe_idx] = NULL;
       assert(status == CL_SUCCESS);
@@ -660,6 +660,7 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
                              &eopencl->event[subframe_idx]);
     assert(status == CL_SUCCESS);
   }
+
   return;
 }
 
@@ -682,7 +683,7 @@ static void vp9_opencl_remove(VP9_COMP *cpi) {
     }
   }
 
-  for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+  for (gpu_bsize = 0; gpu_bsize < BLOCKS_PROCESSED_ON_GPU; gpu_bsize++) {
 #if OPENCL_PROFILING
     fprintf(stdout, "\nBlock size idx = %d\n", gpu_bsize);
     for(i = 0; i < NUM_KERNELS; i++) {
@@ -706,6 +707,12 @@ static void vp9_opencl_remove(VP9_COMP *cpi) {
     status = clReleaseKernel(eopencl->rd_calculation[gpu_bsize]);
     if (status != CL_SUCCESS)
       goto fail;
+
+    if (gpu_bsize == GPU_BLOCK_8X8) {
+      status = clReleaseKernel(eopencl->vp9_is_8x8_required);
+      if (status != CL_SUCCESS)
+        goto fail;
+    }
   }
 
 #if OPENCL_PROFILING
@@ -718,10 +725,6 @@ static void vp9_opencl_remove(VP9_COMP *cpi) {
   }
   fprintf(stdout, "\nGRAND TOTAL = %"PRIu64"\n", grand_total);
 #endif
-
-  status = clReleaseKernel(eopencl->vp9_is_8x8_required);
-  if (status != CL_SUCCESS)
-    goto fail;
 
   return;
 
@@ -793,8 +796,7 @@ int vp9_eopencl_init(VP9_COMP *cpi) {
   if (kernel_src == NULL)
     goto fail;
 
-  for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
-
+  for (gpu_bsize = 0; gpu_bsize < BLOCKS_PROCESSED_ON_GPU; gpu_bsize++) {
     program = clCreateProgramWithSource(opencl->context, 1,
                                         (const char**)(void *)&kernel_src,
                                         NULL,
@@ -850,7 +852,7 @@ int vp9_eopencl_init(VP9_COMP *cpi) {
       goto fail;
   }
 
-  for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+  for (gpu_bsize = 0; gpu_bsize < BLOCKS_PROCESSED_ON_GPU; gpu_bsize++) {
 
     program = clCreateProgramWithSource(opencl->context, 1,
                                         (const char**)(void *)&kernel_src,
@@ -908,7 +910,7 @@ int vp9_eopencl_init(VP9_COMP *cpi) {
       goto fail;
   }
 
-  for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+  for (gpu_bsize = 0; gpu_bsize < BLOCKS_PROCESSED_ON_GPU; gpu_bsize++) {
 
     program = clCreateProgramWithSource(opencl->context, 1,
                                         (const char**)(void *)&kernel_src,

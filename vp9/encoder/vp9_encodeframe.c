@@ -2862,20 +2862,19 @@ static void nonrd_pick_partition(VP9_COMP *cpi, MACROBLOCK *const x,
     // if its RD cost results from GPU suggests that 32x32 is better
     if (x->use_gpu && bsize == BLOCK_32X32) {
       int64_t total_rd_16x16 = 0;
-      int is_gpu_block = 1;
-      for (i = 0; i < 4; ++i) {
+      int is_gpu_block = get_gpu_block_size(BLOCK_16X16) < BLOCKS_PROCESSED_ON_GPU;
+      for (i = 0; (i < 4) && is_gpu_block; ++i) {
         const int x_idx = (i & 1) * ms;
         const int y_idx = (i >> 1) * ms;
-        const int ms_16x16 = num_8x8_blocks_wide_lookup[bsize] / 2;
+        const int ms_16x16 = num_8x8_blocks_wide_lookup[BLOCK_16X16] / 2;
         const int force_horz_split_16x16 =
             (mi_row + y_idx + ms_16x16 >= cm->mi_rows);
         const int force_vert_split_16x16 =
             (mi_col + x_idx + ms_16x16 >= cm->mi_cols);
 
-        if (force_horz_split_16x16 || force_vert_split_16x16)
-        {
+        if (force_horz_split_16x16 || force_vert_split_16x16) {
           is_gpu_block = 0;
-          continue;
+          break;
         }
 
         if (mi_row + y_idx >= cm->mi_rows || mi_col + x_idx >= cm->mi_cols)
@@ -2886,7 +2885,7 @@ static void nonrd_pick_partition(VP9_COMP *cpi, MACROBLOCK *const x,
       }
       // If the 32x32 RD cost is 12.5% lesser than the total RD cost(from GPU)
       // of its sub 16x16 blocks, then avoid further computations for 16x16
-      if (best_rd < (total_rd_16x16 * 7) / 8 && is_gpu_block)
+      if (is_gpu_block && best_rd < (total_rd_16x16 - (total_rd_16x16 >> 3)))
         sum_rd = INT64_MAX;
     }
 
@@ -3075,7 +3074,11 @@ static void nonrd_use_partition(VP9_COMP *cpi, MACROBLOCK *const x,
 
   subsize = (bsize >= BLOCK_8X8) ? mi[0]->mbmi.sb_type : BLOCK_4X4;
   partition = partition_lookup[bsl][subsize];
-  if(x->data_parallel_processing)
+  if (x->data_parallel_processing && partition == PARTITION_NONE) {
+    int is_gpu_block = get_gpu_block_size(subsize) < BLOCKS_PROCESSED_ON_GPU;
+    if (!is_gpu_block) return;
+  }
+  if (x->data_parallel_processing)
     vp9_zero(x->pred_mv);
 
   switch (partition) {
@@ -3225,15 +3228,15 @@ static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
          sf->min_partition_size == BLOCK_8X8);
 
   for (h = 0; h < num_32x32_in_64x64; ++h) {
-    int total_rate[GPU_BLOCK_SIZES];
-    int64_t total_dist[GPU_BLOCK_SIZES];
-    int64_t rdcost[GPU_BLOCK_SIZES];
+    int total_rate[GPU_BLOCK_SIZES] = {0};
+    int64_t total_dist[GPU_BLOCK_SIZES] = {0};
+    int64_t rdcost[GPU_BLOCK_SIZES] = {0};
     int is_gpu_block = 1;
 
     // First iteration(i = 0) will run for 32x32 block
     // Second iteration(i = 1) will run for four 16x16 childs blocks
     // Third iteration(i = 2) will run for sixteen(4*4) 8x8 child blocks
-    for (i = 0; i < GPU_BLOCK_SIZES; ++i) {
+    for (i = 0; i < BLOCKS_PROCESSED_ON_GPU; ++i) {
       BLOCK_SIZE bsize = get_actual_block_size(i);
       PC_TREE *pc_tree_i = cpi->pc_root[thread_id]->split[h];
       PC_TREE *pc_parent_i = cpi->pc_root[thread_id];
@@ -3352,7 +3355,7 @@ static void encode_nonrd_sb_row(VP9_COMP *cpi, MACROBLOCK *const x,
       egpu->enc_sync_read(cpi, subframe_idx);
       if (mi_row == subframe.mi_row_start) {
         GPU_BLOCK_SIZE gpu_bsize;
-        for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+        for (gpu_bsize = 0; gpu_bsize < BLOCKS_PROCESSED_ON_GPU; gpu_bsize++) {
           GPU_OUTPUT *gpu_output_subframe;
           egpu->acquire_output_buffer(cpi, gpu_bsize,
                                       (void **)&gpu_output_subframe,
