@@ -38,8 +38,15 @@ typedef enum GPU_BLOCK_SIZE {
   GPU_BLOCK_INVALID = GPU_BLOCK_SIZES
 } GPU_BLOCK_SIZE;
 
-#define LAST_GPU_BLOCK_SIZE GPU_BLOCK_8X8
+// Defines the last block size (from GPU_BLOCK_SIZE enum) that would run on GPU
+// If the last GPU block size is 32x32, 16x16 block size would still run in data
+// parallel mode on CPU without using the parent MV from 32x32.
+#define LAST_GPU_BLOCK_SIZE GPU_BLOCK_32X32
+#if CONFIG_GPU_COMPUTE
 #define BLOCKS_PROCESSED_ON_GPU (LAST_GPU_BLOCK_SIZE + 1)
+#else
+#define BLOCKS_PROCESSED_ON_GPU (MAX(LAST_GPU_BLOCK_SIZE, GPU_BLOCK_16X16) + 1)
+#endif
 
 struct VP9_COMP;
 struct macroblock;
@@ -140,12 +147,10 @@ void vp9_find_mv_refs_rt(const VP9_COMMON *cm, const struct macroblock *x,
 void vp9_subframe_init(SubFrameInfo *subframe, const VP9_COMMON *cm, int row);
 int vp9_get_subframe_index(const VP9_COMMON *cm, int mi_row);
 
-#if !CONFIG_GPU_COMPUTE
-
 void vp9_alloc_gpu_interface_buffers(struct VP9_COMP *cpi);
 void vp9_free_gpu_interface_buffers(struct VP9_COMP *cpi);
 
-#else
+#if CONFIG_GPU_COMPUTE
 
 int vp9_egpu_init(struct VP9_COMP *cpi);
 

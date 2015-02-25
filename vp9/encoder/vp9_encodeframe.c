@@ -2862,7 +2862,7 @@ static void nonrd_pick_partition(VP9_COMP *cpi, MACROBLOCK *const x,
     // if its RD cost results from GPU suggests that 32x32 is better
     if (x->use_gpu && bsize == BLOCK_32X32) {
       int64_t total_rd_16x16 = 0;
-      int is_gpu_block = get_gpu_block_size(BLOCK_16X16) < BLOCKS_PROCESSED_ON_GPU;
+      int is_gpu_block = 1;
       for (i = 0; (i < 4) && is_gpu_block; ++i) {
         const int x_idx = (i & 1) * ms;
         const int y_idx = (i >> 1) * ms;
@@ -3075,7 +3075,11 @@ static void nonrd_use_partition(VP9_COMP *cpi, MACROBLOCK *const x,
   subsize = (bsize >= BLOCK_8X8) ? mi[0]->mbmi.sb_type : BLOCK_4X4;
   partition = partition_lookup[bsl][subsize];
   if (x->data_parallel_processing && partition == PARTITION_NONE) {
+#if CONFIG_GPU_COMPUTE
+    int is_gpu_block = (bsize == BLOCK_16X16);
+#else
     int is_gpu_block = get_gpu_block_size(subsize) < BLOCKS_PROCESSED_ON_GPU;
+#endif
     if (!is_gpu_block) return;
   }
   if (x->data_parallel_processing)
@@ -3224,8 +3228,8 @@ static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
   // Assumption : Only 32x32, 16x16 and 8x8 are required to be analyzed
   (void)sf;
   assert(sf->use_square_partition_only &&
-         sf->max_partition_size == BLOCK_32X32 &&
-         sf->min_partition_size == BLOCK_8X8);
+         x->max_partition_size == BLOCK_32X32 &&
+         x->min_partition_size == BLOCK_8X8);
 
   for (h = 0; h < num_32x32_in_64x64; ++h) {
     int total_rate[GPU_BLOCK_SIZES] = {0};
@@ -3233,10 +3237,16 @@ static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
     int64_t rdcost[GPU_BLOCK_SIZES] = {0};
     int is_gpu_block = 1;
 
+#if CONFIG_GPU_COMPUTE
+    i = GPU_BLOCK_16X16;
+    {
+#else
+    x->max_partition_size = sf->max_partition_size;
     // First iteration(i = 0) will run for 32x32 block
     // Second iteration(i = 1) will run for four 16x16 childs blocks
     // Third iteration(i = 2) will run for sixteen(4*4) 8x8 child blocks
     for (i = 0; i < BLOCKS_PROCESSED_ON_GPU; ++i) {
+#endif
       BLOCK_SIZE bsize = get_actual_block_size(i);
       PC_TREE *pc_tree_i = cpi->pc_root[thread_id]->split[h];
       PC_TREE *pc_parent_i = cpi->pc_root[thread_id];
@@ -3259,6 +3269,10 @@ static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
         int col_idx_j = col_idx_i + ((j & 1) * ms);
         int row_idx_j = row_idx_i + (j >> 1) * ms;
         int split_into_8x8 = bsize < BLOCK_16X16;
+        // When only 32x32 is processed on GPU, we make sure Parent MV 
+        // is not used for 16x16(which would run on CPU)
+        if (split_into_16x16 && LAST_GPU_BLOCK_SIZE == GPU_BLOCK_32X32)
+          x->max_partition_size = BLOCK_16X16;
 
         // This loop runs for each 8x8 block, whenever applicable
         for (k = 0; k < (split_into_8x8 ? 4 : 1); ++k) {
@@ -3350,7 +3364,7 @@ static void encode_nonrd_sb_row(VP9_COMP *cpi, MACROBLOCK *const x,
       x->use_gpu = cm->use_gpu;
     }
 #if CONFIG_GPU_COMPUTE
-    if (x->use_gpu) {
+    if (!x->data_parallel_processing && x->use_gpu) {
       VP9_EGPU *egpu = &cpi->egpu;
       egpu->enc_sync_read(cpi, subframe_idx);
       if (mi_row == subframe.mi_row_start) {
@@ -3684,13 +3698,15 @@ static void encode_tiles(VP9_COMP *cpi) {
     // TODO(ram-ittiam): Remove this assert, after adding appropriate sanity
     // checks for use_gpu setting
     assert(cm->prev_mi != NULL);
+    x->data_parallel_processing = 1;
 #if CONFIG_GPU_COMPUTE
     vp9_gpu_mv_compute(cpi, x);
+    if(LAST_GPU_BLOCK_SIZE < GPU_BLOCK_16X16)
+      encode_sb_rows(cpi, x, 0, cm->mi_rows, MI_BLOCK_SIZE);
 #else
-    x->data_parallel_processing = 1;
     encode_sb_rows(cpi, x, 0, cm->mi_rows, MI_BLOCK_SIZE);
-    x->data_parallel_processing = 0;
 #endif
+    x->data_parallel_processing = 0;
   }
   // encode SB
   encode_sb_rows(cpi, x, 0, cm->mi_rows, MI_BLOCK_SIZE);
@@ -3717,10 +3733,14 @@ void encode_tiles_mt(VP9_COMP *cpi) {
   // Call the Data parallel MV compute (to be performed by GPU)
   if (cm->use_gpu &&
       cpi->sf.use_nonrd_pick_mode && !frame_is_intra_only(cm)) {
+    MACROBLOCK *const x = &cpi->mb;
     // TODO(ram-ittiam): Remove this assert, after adding appropriate sanity
     // checks for use_gpu setting
     assert(cm->prev_mi != NULL);
-    vp9_gpu_mv_compute(cpi, &cpi->mb);
+    x->data_parallel_processing = 1;
+    vp9_gpu_mv_compute(cpi, x);
+    x->data_parallel_processing = 0;
+
   }
 #endif
 
@@ -3765,9 +3785,7 @@ void encode_tiles_mt(VP9_COMP *cpi) {
 
 int encoding_thread_process(thread_context *const thread_ctxt, void* data2) {
   VP9_COMP *cpi = thread_ctxt->cpi;
-#if !CONFIG_GPU_COMPUTE
   const VP9_COMMON *const cm = &cpi->common;
-#endif
   MACROBLOCK *const x = &thread_ctxt->mb;
   MACROBLOCKD *const xd = &x->e_mbd;
   SPEED_FEATURES *const sf = &cpi->sf;
@@ -3792,10 +3810,13 @@ int encoding_thread_process(thread_context *const thread_ctxt, void* data2) {
     }
     vp9_zero(x->zcoeff_blk);
   }
-#if !CONFIG_GPU_COMPUTE
   // Call the Data parallel MV compute (to be performed by GPU)
   if (cm->use_gpu &&
-      cpi->sf.use_nonrd_pick_mode && !frame_is_intra_only(cm)) {
+      cpi->sf.use_nonrd_pick_mode &&
+#if CONFIG_GPU_COMPUTE
+      LAST_GPU_BLOCK_SIZE < GPU_BLOCK_16X16 &&
+#endif
+      !frame_is_intra_only(cm)) {
     // TODO(ram-ittiam): Remove this assert, after adding appropriate sanity
     // checks for use_gpu setting
     assert(cm->prev_mi != NULL);
@@ -3804,7 +3825,6 @@ int encoding_thread_process(thread_context *const thread_ctxt, void* data2) {
                    thread_ctxt->mi_row_step);
     x->data_parallel_processing = 0;
   }
-#endif
   encode_sb_rows(cpi, x, thread_ctxt->mi_row_start, thread_ctxt->mi_row_end,
                  thread_ctxt->mi_row_step);
 

@@ -218,11 +218,9 @@ static void dealloc_compressor_data(VP9_COMP *cpi) {
   vpx_free(cpi->tplist);
   cpi->tplist = NULL;
 
-#if !CONFIG_GPU_COMPUTE
   if (cm->use_gpu) {
     vp9_free_gpu_interface_buffers(cpi);
   }
-#endif
 
   vp9_free_pc_tree(cpi);
 
@@ -537,11 +535,9 @@ void vp9_alloc_compressor_data(VP9_COMP *cpi) {
   CHECK_MEM_ERROR(cm, cpi->tplist,
                   vpx_calloc(cm->sb_rows, sizeof(*cpi->tplist)));
 
-#if !CONFIG_GPU_COMPUTE
   if (cm->use_gpu) {
     vp9_alloc_gpu_interface_buffers(cpi);
   }
-#endif
 
   // don't create more threads than rows available
   cpi->max_threads = MIN(cpi->max_threads, cm->sb_rows);

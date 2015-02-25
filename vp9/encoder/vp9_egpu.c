@@ -91,13 +91,20 @@ int vp9_get_subframe_index(const VP9_COMMON *cm, int mi_row) {
   return idx;
 }
 
-#if !CONFIG_GPU_COMPUTE
 
 void vp9_alloc_gpu_interface_buffers(VP9_COMP *cpi) {
   VP9_COMMON *const cm = &cpi->common;
   GPU_BLOCK_SIZE gpu_bsize;
 
+#if !CONFIG_GPU_COMPUTE
   for (gpu_bsize = GPU_BLOCK_32X32; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+#else
+  if(LAST_GPU_BLOCK_SIZE >= GPU_BLOCK_16X16)
+    return;
+  // Allocate only for 16x16 block size, if required
+  gpu_bsize = GPU_BLOCK_16X16;
+  {
+#endif
     const BLOCK_SIZE bsize = get_actual_block_size(gpu_bsize);
     const int blocks_in_row = (cm->sb_cols * num_mxn_blocks_wide_lookup[bsize]);
     const int blocks_in_col = (cm->sb_rows * num_mxn_blocks_high_lookup[bsize]);
@@ -111,13 +118,21 @@ void vp9_alloc_gpu_interface_buffers(VP9_COMP *cpi) {
 void vp9_free_gpu_interface_buffers(VP9_COMP *cpi) {
   GPU_BLOCK_SIZE gpu_bsize;
 
+#if !CONFIG_GPU_COMPUTE
   for (gpu_bsize = GPU_BLOCK_32X32; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+#else
+  if(LAST_GPU_BLOCK_SIZE >= GPU_BLOCK_16X16)
+    return;
+  // Free only for 16x16 block size, if required
+  gpu_bsize = GPU_BLOCK_16X16;
+  {
+#endif
     vpx_free(cpi->gpu_output_base[gpu_bsize]);
     cpi->gpu_output_base[gpu_bsize] = NULL;
   }
 }
 
-#else
+#if CONFIG_GPU_COMPUTE
 
 int vp9_egpu_init(VP9_COMP *cpi) {
 #if CONFIG_OPENCL
@@ -318,8 +333,6 @@ void vp9_gpu_mv_compute(VP9_COMP *cpi, MACROBLOCK *const x) {
   GPU_BLOCK_SIZE gpu_bsize;
   int subframe_idx;
 
-  x->data_parallel_processing = 1;
-
   // fill rd param info
   vp9_gpu_fill_rd_parameters(cpi, x);
   // fill mv info
@@ -342,7 +355,6 @@ void vp9_gpu_mv_compute(VP9_COMP *cpi, MACROBLOCK *const x) {
   vp9_acquire_frame_buffer(cm, cpi->Source);
   vp9_acquire_frame_buffer(cm, get_ref_frame_buffer(cpi, LAST_FRAME));
 
-  x->data_parallel_processing = 0;
 }
 
 #endif

@@ -466,6 +466,9 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
   PRED_BUFFER *best_pred = NULL;
   PRED_BUFFER *this_mode_pred = NULL;
   int is_gpu_block = get_gpu_block_size(bsize) < BLOCKS_PROCESSED_ON_GPU;
+#if CONFIG_GPU_COMPUTE
+  is_gpu_block |= (bsize == BLOCK_16X16);
+#endif
 
   if (cpi->sf.reuse_inter_pred_sby) {
     int i;
