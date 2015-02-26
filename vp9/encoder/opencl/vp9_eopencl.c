@@ -23,13 +23,13 @@
 #endif
 
 static const int pixel_rows_per_workitem_log2_inter_pred[GPU_BLOCK_SIZES]
-                                                         = {3, 2, 0};
+                                                         = {3, 2};
 
 static const int pixel_rows_per_workitem_log2_full_pixel[GPU_BLOCK_SIZES]
-                                                                = {3, 2, 3};
+                                                                = {3, 2};
 
 static const int pixel_rows_per_workitem_log2_sub_pixel[GPU_BLOCK_SIZES]
-                                                                = {4, 3, 3};
+                                                                = {4, 3};
 
 static char *read_src(const char *src_file_name) {
   FILE *fp;
@@ -282,7 +282,6 @@ static void vp9_opencl_set_kernel_args(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   cl_int mi_rows = cm->mi_rows;
   cl_int mi_cols = cm->mi_cols;
   cl_int y_stride = cm->frame_bufs[0].buf.y_stride;
-  int b_is_8x8 = (gpu_bsize == GPU_BLOCK_8X8);
   cl_int status;
 
   status = clSetKernelArg(eopencl->full_pixel_search[gpu_bsize], 0,
@@ -294,7 +293,7 @@ static void vp9_opencl_set_kernel_args(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   status |= clSetKernelArg(eopencl->full_pixel_search[gpu_bsize], 3,
                            sizeof(cl_mem), gpu_ip);
   status |= clSetKernelArg(eopencl->full_pixel_search[gpu_bsize], 4,
-                           sizeof(cl_mem), b_is_8x8 ? gpu_op : gpu_op_subframe);
+                           sizeof(cl_mem), gpu_op_subframe);
   status |= clSetKernelArg(eopencl->full_pixel_search[gpu_bsize], 5,
                            sizeof(cl_mem), rdopt_parameters);
   status |= clSetKernelArg(eopencl->full_pixel_search[gpu_bsize], 6,
@@ -302,8 +301,7 @@ static void vp9_opencl_set_kernel_args(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   status |= clSetKernelArg(eopencl->full_pixel_search[gpu_bsize], 7,
                            sizeof(cl_int), &mi_cols);
   status |= clSetKernelArg(eopencl->full_pixel_search[gpu_bsize], 8,
-                           sizeof(cl_mem),
-                           b_is_8x8 ? gpu_op_parent : gpu_op_subframe_parent);
+                           sizeof(cl_mem), gpu_op_subframe_parent);
   assert(status == CL_SUCCESS);
 
   status = clSetKernelArg(eopencl->rd_calculation_zeromv[gpu_bsize], 0,
@@ -335,7 +333,7 @@ static void vp9_opencl_set_kernel_args(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   status |= clSetKernelArg(eopencl->sub_pixel_search[gpu_bsize], 3,
                            sizeof(cl_mem), gpu_ip);
   status |= clSetKernelArg(eopencl->sub_pixel_search[gpu_bsize], 4,
-                           sizeof(cl_mem), b_is_8x8 ? gpu_op : gpu_op_subframe);
+                           sizeof(cl_mem), gpu_op_subframe);
   status |= clSetKernelArg(eopencl->sub_pixel_search[gpu_bsize], 5,
                            sizeof(cl_mem), rdopt_parameters);
   status |= clSetKernelArg(eopencl->sub_pixel_search[gpu_bsize], 6,
@@ -343,8 +341,7 @@ static void vp9_opencl_set_kernel_args(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   status |= clSetKernelArg(eopencl->sub_pixel_search[gpu_bsize], 7,
                            sizeof(cl_int), &mi_cols);
   status |= clSetKernelArg(eopencl->sub_pixel_search[gpu_bsize], 8,
-                           sizeof(cl_mem),
-                           b_is_8x8 ? gpu_op_parent : gpu_op_subframe_parent);
+                           sizeof(cl_mem), gpu_op_subframe_parent);
   assert(status == CL_SUCCESS);
 
   status = clSetKernelArg(eopencl->inter_prediction_and_sse[gpu_bsize], 0,
@@ -360,10 +357,6 @@ static void vp9_opencl_set_kernel_args(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   status |= clSetKernelArg(eopencl->inter_prediction_and_sse[gpu_bsize], 5,
                            sizeof(cl_mem), rdopt_parameters);
   status |= clSetKernelArg(eopencl->inter_prediction_and_sse[gpu_bsize], 6,
-                           sizeof(cl_int), &mi_rows);
-  status |= clSetKernelArg(eopencl->inter_prediction_and_sse[gpu_bsize], 7,
-                           sizeof(cl_int), &mi_cols);
-  status |= clSetKernelArg(eopencl->inter_prediction_and_sse[gpu_bsize], 8,
                            sizeof(cl_mem), gpu_op_subframe_parent);
   assert(status == CL_SUCCESS);
 
@@ -380,30 +373,9 @@ static void vp9_opencl_set_kernel_args(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   status |= clSetKernelArg(eopencl->rd_calculation[gpu_bsize], 5,
                            sizeof(cl_mem), rdopt_parameters);
   status |= clSetKernelArg(eopencl->rd_calculation[gpu_bsize], 6,
-                           sizeof(cl_int), &mi_rows);
-  status |= clSetKernelArg(eopencl->rd_calculation[gpu_bsize], 7,
-                           sizeof(cl_int), &mi_cols);
-  status |= clSetKernelArg(eopencl->rd_calculation[gpu_bsize], 8,
                            sizeof(cl_mem), gpu_op_parent);
   assert(status == CL_SUCCESS);
 
-  if (gpu_bsize == GPU_BLOCK_8X8) {
-    status = clSetKernelArg(eopencl->vp9_is_8x8_required, 0, sizeof(cl_mem),
-                            &eopencl->gpu_input[GPU_BLOCK_32X32].opencl_mem);
-    status |= clSetKernelArg(eopencl->vp9_is_8x8_required, 1, sizeof(cl_mem),
-                             &eopencl->gpu_output[GPU_BLOCK_32X32]);
-    status |= clSetKernelArg(eopencl->vp9_is_8x8_required, 2, sizeof(cl_mem),
-                             &eopencl->gpu_input[GPU_BLOCK_16X16].opencl_mem);
-    status |= clSetKernelArg(eopencl->vp9_is_8x8_required, 3, sizeof(cl_mem),
-                             &eopencl->gpu_output[GPU_BLOCK_16X16]);
-    status |= clSetKernelArg(eopencl->vp9_is_8x8_required, 4, sizeof(cl_mem),
-                             &eopencl->gpu_input[GPU_BLOCK_8X8].opencl_mem);
-    status |= clSetKernelArg(eopencl->vp9_is_8x8_required, 5, sizeof(cl_mem),
-                             &eopencl->gpu_output[GPU_BLOCK_8X8]);
-    status |= clSetKernelArg(eopencl->vp9_is_8x8_required, 6, sizeof(cl_mem),
-                             rdopt_parameters);
-    assert(status == CL_SUCCESS);
-  }
 }
 
 static void vp9_opencl_enc_sync_read(VP9_COMP *cpi, cl_int event_id) {
@@ -449,6 +421,7 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   size_t global_offset[2];
   size_t local_size_full_pixel[2], local_size_sub_pixel[2];
   size_t local_size_inter_pred[2];
+  const int ms_pixels = (num_8x8_blocks_wide_lookup[bsize] / 2) * 8;
 
   cl_int status = CL_SUCCESS;
 
@@ -474,11 +447,11 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   num_block_cols = cm->width >> b_width_in_pixels_log2;
 
   // If width or Height is not a multiple of block size
-  if (cm->width & b_width_mask)
+  if ((cm->width & b_width_mask) > ms_pixels)
     num_block_cols++;
 
   if (subframe_idx == MAX_SUB_FRAMES - 1)
-    if (cm->height & b_height_mask)
+    if ((cm->height & b_height_mask) > ms_pixels)
       num_block_rows++;
 
   vp9_opencl_set_kernel_args(cpi, gpu_bsize, subframe_idx);
@@ -516,24 +489,6 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
         frm_ref->v_buffer = NULL;
   }
 
-  // launch 8x8 decision kernel
-  if (gpu_bsize == GPU_BLOCK_8X8) {
-    const int log2_of_32 = b_width_log2(BLOCK_32X32) + 2;
-    int subframe_offset = subframe.mi_row_start >> mi_height_log2(BLOCK_32X32);
-
-    global_size[0] = cm->width >> log2_of_32;
-    global_size[1] = subframe_height >> log2_of_32;
-
-    global_offset[0] = 0;
-    global_offset[1] = subframe_offset;
-
-    status = clEnqueueNDRangeKernel(opencl->cmd_queue,
-                                    eopencl->vp9_is_8x8_required,
-                                    2, global_offset, global_size, NULL,
-                                    0, NULL, NULL);
-    assert(status == CL_SUCCESS);
-  }
-
   // launch full pixel search new mv analysis kernel
   // number of workitems per block
   local_size[0] = b_width_in_pixels / workitem_size[0];
@@ -553,14 +508,11 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   global_offset[0] = 0;
   global_offset[1] = block_row_offset * local_size_full_pixel[1];
 
-  if (gpu_bsize == GPU_BLOCK_8X8)
-    assert(local_size_full_pixel[0] * local_size_full_pixel[1] == 1);
-
   status = clEnqueueNDRangeKernel(
       opencl->cmd_queue,
       eopencl->full_pixel_search[gpu_bsize], 2,
       global_offset, global_size,
-      ((gpu_bsize == GPU_BLOCK_8X8) ? NULL : local_size_full_pixel),
+      local_size_full_pixel,
       0, NULL, event_ptr[0]);
   assert(status == CL_SUCCESS);
 
@@ -591,15 +543,12 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   global_offset[0] = 0;
   global_offset[1] = block_row_offset * local_size_sub_pixel[1];
 
-  if (gpu_bsize == GPU_BLOCK_8X8)
-    assert(local_size_sub_pixel[0] * local_size_sub_pixel[1] == 1);
-
   // launch sub pixel search kernel
   status = clEnqueueNDRangeKernel(
       opencl->cmd_queue,
       eopencl->sub_pixel_search[gpu_bsize], 2,
       global_offset, global_size,
-      ((gpu_bsize == GPU_BLOCK_8X8) ? NULL : local_size_sub_pixel),
+      local_size_sub_pixel,
       0, NULL, event_ptr[2]);
   assert(status == CL_SUCCESS);
 
@@ -707,12 +656,6 @@ static void vp9_opencl_remove(VP9_COMP *cpi) {
     status = clReleaseKernel(eopencl->rd_calculation[gpu_bsize]);
     if (status != CL_SUCCESS)
       goto fail;
-
-    if (gpu_bsize == GPU_BLOCK_8X8) {
-      status = clReleaseKernel(eopencl->vp9_is_8x8_required);
-      if (status != CL_SUCCESS)
-        goto fail;
-    }
   }
 
 #if OPENCL_PROFILING
@@ -749,20 +692,18 @@ int vp9_eopencl_init(VP9_COMP *cpi) {
   // TODO(karthick-ittiam) : Fix this hardcoding
   char build_options_full_pixel_search[GPU_BLOCK_SIZES][BUILD_OPTION_LENGTH] = {
       "-DBLOCK_SIZE_IN_PIXELS=32 -DPIXEL_ROWS_PER_WORKITEM=8 -DINTEL_HD_GRAPHICS=0",
-      "-DBLOCK_SIZE_IN_PIXELS=16 -DPIXEL_ROWS_PER_WORKITEM=4 -DINTEL_HD_GRAPHICS=0",
-      "-DBLOCK_SIZE_IN_PIXELS=8 -DPIXEL_ROWS_PER_WORKITEM=8 -DINTEL_HD_GRAPHICS=0"
+      "-DBLOCK_SIZE_IN_PIXELS=16 -DPIXEL_ROWS_PER_WORKITEM=4 -DINTEL_HD_GRAPHICS=0"
   };
 
   char build_options_sub_pixel_search[GPU_BLOCK_SIZES][BUILD_OPTION_LENGTH] = {
       "-DBLOCK_SIZE_IN_PIXELS=32 -DPIXEL_ROWS_PER_WORKITEM=16 -DINTEL_HD_GRAPHICS=0",
-      "-DBLOCK_SIZE_IN_PIXELS=16 -DPIXEL_ROWS_PER_WORKITEM=8 -DINTEL_HD_GRAPHICS=0",
-      "-DBLOCK_SIZE_IN_PIXELS=8 -DPIXEL_ROWS_PER_WORKITEM=8 -DINTEL_HD_GRAPHICS=0"
+      "-DBLOCK_SIZE_IN_PIXELS=16 -DPIXEL_ROWS_PER_WORKITEM=8 -DINTEL_HD_GRAPHICS=0"
   };
 
   char build_options[GPU_BLOCK_SIZES][BUILD_OPTION_LENGTH] = {
       "-DBLOCK_SIZE_IN_PIXELS=32 -DPIXEL_ROWS_PER_WORKITEM=8 -DINTEL_HD_GRAPHICS=0",
-      "-DBLOCK_SIZE_IN_PIXELS=16 -DPIXEL_ROWS_PER_WORKITEM=4 -DINTEL_HD_GRAPHICS=0",
-      "-DBLOCK_SIZE_IN_PIXELS=8 -DPIXEL_ROWS_PER_WORKITEM=1 -DINTEL_HD_GRAPHICS=0" };
+      "-DBLOCK_SIZE_IN_PIXELS=16 -DPIXEL_ROWS_PER_WORKITEM=4 -DINTEL_HD_GRAPHICS=0"
+  };
   char *kernel_src = NULL;
   GPU_BLOCK_SIZE gpu_bsize;
 
@@ -970,13 +911,6 @@ int vp9_eopencl_init(VP9_COMP *cpi) {
         program, "vp9_rd_calculation", &status);
     if (status != CL_SUCCESS)
       goto fail;
-
-    if(gpu_bsize == GPU_BLOCK_8X8) {
-      eopencl->vp9_is_8x8_required = clCreateKernel(
-          program, "vp9_is_8x8_required", &status);
-      if (status != CL_SUCCESS)
-        goto fail;
-    }
 
     status = clReleaseProgram(program);
     if (status != CL_SUCCESS)

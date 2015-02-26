@@ -3184,34 +3184,8 @@ static void nonrd_use_partition(VP9_COMP *cpi, MACROBLOCK *const x,
 
 // In this function, a non-recursive, data-parallel execution of
 // nonrd_pick_partition in GPU is emulated.
-//
-// Recursive data serial design
-// ============================
-// Step 1 : Best MV computation for a 32x32 parent block is done
-// Step 2 : Best MV computation for the 1st child 16x16 is done
-// Step 3 : Best MV computation for all 8x8 child blocks of 1st 16x16 is done
-// Step 4 : Best MV computation for the 2nd child 16x16 is done
-// Step 5 : Best MV computation for all 8x8 child blocks of 2nd 16x16 is done
-// Step 6 : Best MV computation for the 3rd child 16x16 is done
-// Step 7 : Best MV computation for all 8x8 child blocks of 3rd 16x16 is done
-// Step 8 : Best MV computation for the 4th child 16x16 is done
-// Step 9 : Best MV computation for all 8x8 child blocks of 4th 16x16 is done
-//
-// Non-recursive data-parallel design(for GPU)
-// ===========================================
-// Step 1 : Best MV computation for a 32x32 parent block is done
-// Step 2 : Best MV computation for the 1st child 16x16 is done
-// Step 3 : Best MV computation for the 2nd child 16x16 is done
-// Step 4 : Best MV computation for the 3rd child 16x16 is done
-// Step 5 : Best MV computation for the 4th child 16x16 is done
-// Step 6 : EXIT now, if the 32x32 RD is lesser than the RD of 16x16 blocks
-// Step 7 : Best MV computation for all 8x8 child blocks of 1st 16x16 is done
-// Step 8 : Best MV computation for all 8x8 child blocks of 2nd 16x16 is done
-// Step 9 : Best MV computation for all 8x8 child blocks of 3rd 16x16 is done
-// Step 10 : Best MV computation for all 8x8 child blocks of 4th 16x16 is done
-// In GPU Steps 2 to 5 will be executed concurrently
-// In GPU Steps 7 to 10 will be conditionally performed based on the total
-// RD cost of 16x16 blocks
+// Performs pick partition only the required Block sizes, non-recursively
+// instead of performing the same recursively
 static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
                                                MACROBLOCK *const x,
                                                const TileInfo *const tile,
@@ -3221,7 +3195,7 @@ static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
   SPEED_FEATURES *const sf = &cpi->sf;
   VP9_COMMON *const cm = &cpi->common;
   GPU_BLOCK_SIZE i;
-  int h, j, k;
+  int h, j;
   const int num_32x32_in_64x64 = 4;
   const int thread_id = x->thread_id;
 
@@ -3232,10 +3206,6 @@ static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
          x->min_partition_size == BLOCK_8X8);
 
   for (h = 0; h < num_32x32_in_64x64; ++h) {
-    int total_rate[GPU_BLOCK_SIZES] = {0};
-    int64_t total_dist[GPU_BLOCK_SIZES] = {0};
-    int64_t rdcost[GPU_BLOCK_SIZES] = {0};
-    int is_gpu_block = 1;
 
 #if CONFIG_GPU_COMPUTE
     i = GPU_BLOCK_16X16;
@@ -3244,86 +3214,52 @@ static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
     x->max_partition_size = sf->max_partition_size;
     // First iteration(i = 0) will run for 32x32 block
     // Second iteration(i = 1) will run for four 16x16 childs blocks
-    // Third iteration(i = 2) will run for sixteen(4*4) 8x8 child blocks
     for (i = 0; i < BLOCKS_PROCESSED_ON_GPU; ++i) {
 #endif
       BLOCK_SIZE bsize = get_actual_block_size(i);
       PC_TREE *pc_tree_i = cpi->pc_root[thread_id]->split[h];
       PC_TREE *pc_parent_i = cpi->pc_root[thread_id];
-      const int ms = num_8x8_blocks_wide_lookup[BLOCK_32X32];
-      int col_idx_i = (h & 1) * ms;
-      int row_idx_i = (h >> 1) * ms;
+      const int ms_32x32 = num_8x8_blocks_wide_lookup[BLOCK_32X32];
+      int col_idx_i = (h & 1) * ms_32x32;
+      int row_idx_i = (h >> 1) * ms_32x32;
       int split_into_16x16 = bsize < BLOCK_32X32;
-      total_rate[i] = 0;
-      total_dist[i] = 0;
       // Limit the minimum partition size here, so that "nonrd_pick_partition"
       // will not get called recursively
       x->min_partition_size = bsize;
-
       // This loop runs for each 16x16 block, whenever applicable
       for (j = 0; j < (split_into_16x16 ? 4 : 1); ++j) {
-        PC_TREE *pc_tree_j = split_into_16x16 ? pc_tree_i->split[j] : pc_tree_i;
-        PC_TREE *pc_parent_j =
+        PC_TREE *pc_tree = split_into_16x16 ? pc_tree_i->split[j] : pc_tree_i;
+        PC_TREE *pc_parent =
             split_into_16x16 ? pc_parent_i->split[h] : pc_parent_i;
-        const int ms = num_8x8_blocks_wide_lookup[BLOCK_16X16];
-        int col_idx_j = col_idx_i + ((j & 1) * ms);
-        int row_idx_j = row_idx_i + (j >> 1) * ms;
-        int split_into_8x8 = bsize < BLOCK_16X16;
-        // When only 32x32 is processed on GPU, we make sure Parent MV 
-        // is not used for 16x16(which would run on CPU)
-        if (split_into_16x16 && LAST_GPU_BLOCK_SIZE == GPU_BLOCK_32X32)
+        const int ms_16x16 = num_8x8_blocks_wide_lookup[BLOCK_16X16];
+        int col_idx = col_idx_i + ((j & 1) * ms_16x16);
+        int row_idx = row_idx_i + (j >> 1) * ms_16x16;
+        int rate;
+        int64_t dist;
+        const int actual_mi_row = mi_row + row_idx;
+        const int actual_mi_col = mi_col + col_idx;
+        const int ms = num_8x8_blocks_wide_lookup[bsize] / 2;
+        const int force_horz_split = (actual_mi_row + ms >= cm->mi_rows);
+        const int force_vert_split = (actual_mi_col + ms >= cm->mi_cols);
+
+        if (force_horz_split || force_vert_split) {
+          vpx_memcpy(pc_tree->none.pred_mv, pc_parent->none.pred_mv,
+                     sizeof(pc_parent->none.pred_mv));
+          continue;
+        }
+        if (actual_mi_col >= tile->mi_col_end ||
+            actual_mi_row >= tile->mi_row_end)
+          continue;
+        // We make sure Parent MV is not used for 16x16
+        if (split_into_16x16)
           x->max_partition_size = BLOCK_16X16;
 
-        // This loop runs for each 8x8 block, whenever applicable
-        for (k = 0; k < (split_into_8x8 ? 4 : 1); ++k) {
-          PC_TREE *pc_tree = split_into_8x8 ? pc_tree_j->split[k] : pc_tree_j;
-          PC_TREE *pc_parent =
-              split_into_8x8 ? pc_parent_j->split[j] : pc_parent_j;
-          int col_idx = col_idx_j + (k & 1);
-          int row_idx = row_idx_j + (k >> 1);
-          int rate;
-          int64_t dist;
-          const int actual_mi_row = mi_row + row_idx;
-          const int actual_mi_col = mi_col + col_idx;
-          const int ms = num_8x8_blocks_wide_lookup[bsize] / 2;
-          const int force_horz_split = (actual_mi_row + ms >= cm->mi_rows);
-          const int force_vert_split = (actual_mi_col + ms >= cm->mi_cols);
+        load_pred_mv(x, &pc_parent->none);
+        nonrd_pick_partition(cpi, x, tile, tp, actual_mi_row,
+                             actual_mi_col, bsize, &rate, &dist, 0,
+                             INT64_MAX, pc_tree);
 
-          if (force_horz_split || force_vert_split) {
-            vpx_memcpy(pc_tree->none.pred_mv, pc_parent->none.pred_mv,
-                       sizeof(pc_parent->none.pred_mv));
-            is_gpu_block = 0;
-            continue;
-          }
-          if (actual_mi_col >= tile->mi_col_end ||
-              actual_mi_row >= tile->mi_row_end)
-            continue;
-
-          // Let us try to avoid 8x8's MV computations if 32x32 is winning
-          // already
-          if (bsize == BLOCK_8X8 && is_gpu_block) {
-            // If the 32x32's RD cost is 12.5% lesser than 16x16's RD cost,
-            // then skip computations for 8x8
-            int64_t rdcost_minus_12_point_5_percent = rdcost[GPU_BLOCK_16X16] -
-                (rdcost[GPU_BLOCK_16X16] / 8);
-            if (rdcost[GPU_BLOCK_32X32] < rdcost_minus_12_point_5_percent) {
-              vp9_gpu_set_mvinfo_offsets(cpi, x, actual_mi_row, actual_mi_col,
-                                         BLOCK_8X8);
-              x->gpu_output[GPU_BLOCK_8X8]->best_mode = ZEROMV;
-              x->gpu_output[GPU_BLOCK_8X8]->best_rd = INT64_MAX;
-              continue;
-            }
-          }
-
-          load_pred_mv(x, &pc_parent->none);
-          nonrd_pick_partition(cpi, x, tile, tp, actual_mi_row,
-                               actual_mi_col, bsize, &rate, &dist, 0,
-                               INT64_MAX, pc_tree);
-          total_rate[i] += rate;
-          total_dist[i] += dist;
-        }
       }
-      rdcost[i] = RDCOST(x->rdmult, x->rddiv, total_rate[i], total_dist[i]);
     }
   }
 }

@@ -27,14 +27,13 @@
 const BLOCK_SIZE vp9_actual_block_size_lookup[GPU_BLOCK_SIZES] = {
     BLOCK_32X32,
     BLOCK_16X16,
-    BLOCK_8X8
 };
 
 const BLOCK_SIZE vp9_gpu_block_size_lookup[BLOCK_SIZES] = {
     GPU_BLOCK_INVALID,
     GPU_BLOCK_INVALID,
     GPU_BLOCK_INVALID,
-    GPU_BLOCK_8X8,
+    GPU_BLOCK_INVALID,
     GPU_BLOCK_INVALID,
     GPU_BLOCK_INVALID,
     GPU_BLOCK_16X16,

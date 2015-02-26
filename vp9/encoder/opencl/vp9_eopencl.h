@@ -37,7 +37,6 @@ typedef struct VP9_EOPENCL {
   cl_kernel sub_pixel_search[GPU_BLOCK_SIZES];
   cl_kernel inter_prediction_and_sse[GPU_BLOCK_SIZES];
   cl_kernel rd_calculation[GPU_BLOCK_SIZES];
-  cl_kernel vp9_is_8x8_required;
 
   cl_event event[MAX_SUB_FRAMES];
 #if OPENCL_PROFILING
