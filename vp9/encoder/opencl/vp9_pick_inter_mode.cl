@@ -313,26 +313,23 @@ typedef struct GPU_OUTPUT_STAGE1 {
 struct GPU_INPUT {
   MV nearest_mv;
   MV near_mv;
-  INTERP_FILTER filter_type;
-  int mode_context;
-  int rate_mv;
-  int do_newmv;
-  int do_compute;
-} __attribute__ ((aligned(32)));
+  char filter_type;
+  char mode_context;
+  char do_newmv;
+  char do_compute;
+};
 typedef struct GPU_INPUT GPU_INPUT;
 
 struct GPU_OUTPUT {
+  int64_t returndistortion;
+  int64_t best_rd;
   MV mv;
   int rate_mv;
-  int          sum[EIGHTTAP_SHARP + 1];
-  uint         sse[EIGHTTAP_SHARP + 1];
-  int          returnrate;
-  int64_t      returndistortion;
-  int64_t      best_rd;
-  PREDICTION_MODE best_mode;
-  INTERP_FILTER best_pred_filter;
-  int skip_txfm;
-  TX_SIZE tx_size;
+  int returnrate;
+  char best_mode;
+  char best_pred_filter;
+  char skip_txfm;
+  char tx_size;
 } __attribute__ ((aligned(32)));
 typedef struct GPU_OUTPUT GPU_OUTPUT;
 
@@ -352,6 +349,11 @@ typedef struct GPU_RD_PARAMETERS {
   int error_per_bit;
   int nmvjointcost[MV_JOINTS];
 } GPU_RD_PARAMETERS;
+
+typedef struct {
+  unsigned int sse[EIGHTTAP_SHARP + 1];
+  int sum[EIGHTTAP_SHARP + 1];
+}rd_calc_buffers;
 
 __constant int nmvjointsadcost[MV_JOINTS] = {600,300,300,300};
 
@@ -1752,7 +1754,6 @@ inline void inter_prediction(__global uchar *ref_data,
   }
 }
 
-
 __kernel
 #if BLOCK_SIZE_IN_PIXELS > PIXEL_ROWS_PER_WORKITEM || BLOCK_SIZE_IN_PIXELS > NUM_PIXELS_PER_WORKITEM
 __attribute__((reqd_work_group_size(BLOCK_SIZE_IN_PIXELS / NUM_PIXELS_PER_WORKITEM,
@@ -2111,10 +2112,10 @@ void vp9_inter_prediction_and_sse(__global uchar *ref_frame,
     __global GPU_INPUT *mv_input,
     __global GPU_OUTPUT *sse_variance_output,
     __global GPU_RD_PARAMETERS *rd_parameters,
-    __global GPU_OUTPUT *pred_mv
-) {
-
-  __local uchar8 intermediate_uchar8[(BLOCK_SIZE_IN_PIXELS*(BLOCK_SIZE_IN_PIXELS + 8))/NUM_PIXELS_PER_WORKITEM];
+    __global GPU_OUTPUT *pred_mv,
+    __global rd_calc_buffers *rd_calc_tmp_buffers)
+{
+  __local uchar8 intermediate_uchar8[(BLOCK_SIZE_IN_PIXELS * (BLOCK_SIZE_IN_PIXELS + 8)) / NUM_PIXELS_PER_WORKITEM];
   __local int *intermediate_int = (__local int *)intermediate_uchar8;
 
   int global_row = get_global_id(1);
@@ -2141,7 +2142,9 @@ void vp9_inter_prediction_and_sse(__global uchar *ref_frame,
   int group_offset = global_row / (BLOCK_SIZE_IN_PIXELS / PIXEL_ROWS_PER_WORKITEM) * group_stride + (group_col / 2);
 #endif
 
-  mv_input      += group_offset;
+  mv_input += group_offset;
+
+  rd_calc_tmp_buffers += group_offset;
 
   int filter_type;
 
@@ -2156,6 +2159,7 @@ void vp9_inter_prediction_and_sse(__global uchar *ref_frame,
     if(mv_input->filter_type != SWITCHABLE) {
         group_col += 2;
         mv_input++;
+        rd_calc_tmp_buffers ++;
     }
   }
 
@@ -2193,9 +2197,9 @@ void vp9_inter_prediction_and_sse(__global uchar *ref_frame,
     goto exit;
 
   inter_prediction(ref_frame, cur_frame, stride, horz_subpel, vert_subpel,
-                          filter_type, intermediate_uchar8,
-                          &sse_variance_output->sum[filter_type],
-                          &sse_variance_output->sse[filter_type]);
+                   filter_type, intermediate_uchar8,
+                   &rd_calc_tmp_buffers->sum[filter_type],
+                   &rd_calc_tmp_buffers->sse[filter_type]);
 
 exit:
   return;
@@ -2208,10 +2212,9 @@ void vp9_rd_calculation(__global uchar *ref_frame,
     __global GPU_INPUT *mv_input,
     __global GPU_OUTPUT *sse_variance_output,
     __global GPU_RD_PARAMETERS *rd_parameters,
-    __global GPU_OUTPUT *pred_mv
-) {
-
-
+    __global GPU_OUTPUT *pred_mv,
+    __global rd_calc_buffers *rd_calc_tmp_buffers)
+{
   int global_col = get_global_id(0);
   int global_row = get_global_id(1);
   int global_stride = get_global_size(0);
@@ -2270,9 +2273,11 @@ void vp9_rd_calculation(__global uchar *ref_frame,
   else
     end_filter_type = EIGHTTAP;
 
+  rd_calc_tmp_buffers += (global_row * global_stride + global_col);
+
   for (filter_type = EIGHTTAP; filter_type <= end_filter_type; ++filter_type) {
-    sum = sse_variance_output->sum[filter_type];
-    sse = sse_variance_output->sse[filter_type];
+    sum = rd_calc_tmp_buffers->sum[filter_type];
+    sse = rd_calc_tmp_buffers->sse[filter_type];
     variance = sse - ((long)sum * sum) / (BLOCK_SIZE_IN_PIXELS * BLOCK_SIZE_IN_PIXELS);
     CALCULATE_RATE_DIST
     cost = RDCOST(rd_parameters->rd_mult, rd_parameters->rd_div,

@@ -91,6 +91,7 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
   cl_int status;
   GPU_BLOCK_SIZE gpu_bsize;
   opencl_buffer *rdopt_parameters = &eopencl->rdopt_parameters;
+  int max_block_cols = 0, max_block_rows = 0, intermediate_buff_size;
 
   // alloc buffer for gpu rd params
   rdopt_parameters->size = sizeof(GPU_RD_PARAMETERS);
@@ -108,6 +109,9 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
     opencl_buffer *gpuinput_b_args = &eopencl->gpu_input[gpu_bsize];
     int subframe_idx;
 
+    max_block_cols = MAX(max_block_cols, block_cols);
+    max_block_rows = MAX(max_block_rows, block_rows);
+
     // alloc buffer for gpu input
     gpuinput_b_args->size = alloc_size * sizeof(GPU_INPUT);
     gpuinput_b_args->opencl_mem = clCreateBuffer(
@@ -118,7 +122,7 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
 
     // alloc buffer for gpu output
     eopencl->gpu_output[gpu_bsize] = clCreateBuffer(
-        opencl->context, CL_MEM_WRITE_ONLY | CL_MEM_ALLOC_HOST_PTR,
+        opencl->context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR,
         alloc_size * sizeof(GPU_OUTPUT), NULL, &status);
     if (status != CL_SUCCESS)
       goto fail;
@@ -146,13 +150,22 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
           sf_region.size;
       eopencl->gpu_output_sub_buffer[gpu_bsize][subframe_idx].opencl_mem =
           clCreateSubBuffer(eopencl->gpu_output[gpu_bsize],
-                            CL_MEM_WRITE_ONLY,
+                            CL_MEM_READ_WRITE,
                             CL_BUFFER_CREATE_TYPE_REGION,
                             &sf_region, &status);
       if (status != CL_SUCCESS)
         goto fail;
     }
   }
+
+  // allocate space for intermediate buffers used by gpu kernels
+  intermediate_buff_size =
+      max_block_cols * max_block_rows * sizeof(rd_calc_buffers);
+  eopencl->rd_calc_tmp_buffers = clCreateBuffer(opencl->context, CL_MEM_READ_WRITE,
+                                                intermediate_buff_size, NULL, &status);
+  if (status != CL_SUCCESS)
+    goto fail;
+
   return;
 
 fail:
@@ -207,6 +220,11 @@ static void vp9_opencl_free_buffers(VP9_COMP *cpi) {
     if (status != CL_SUCCESS)
       goto fail;
   }
+
+  status = clReleaseMemObject(eopencl->rd_calc_tmp_buffers);
+  if (status != CL_SUCCESS)
+    goto fail;
+
   return;
 
 fail:
@@ -358,6 +376,8 @@ static void vp9_opencl_set_kernel_args(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
                            sizeof(cl_mem), rdopt_parameters);
   status |= clSetKernelArg(eopencl->inter_prediction_and_sse[gpu_bsize], 6,
                            sizeof(cl_mem), gpu_op_subframe_parent);
+  status |= clSetKernelArg(eopencl->inter_prediction_and_sse[gpu_bsize], 7,
+                           sizeof(cl_mem), &eopencl->rd_calc_tmp_buffers);
   assert(status == CL_SUCCESS);
 
   status = clSetKernelArg(eopencl->rd_calculation[gpu_bsize], 0,
@@ -374,6 +394,8 @@ static void vp9_opencl_set_kernel_args(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
                            sizeof(cl_mem), rdopt_parameters);
   status |= clSetKernelArg(eopencl->rd_calculation[gpu_bsize], 6,
                            sizeof(cl_mem), gpu_op_parent);
+  status |= clSetKernelArg(eopencl->rd_calculation[gpu_bsize], 7,
+                           sizeof(cl_mem), &eopencl->rd_calc_tmp_buffers);
   assert(status == CL_SUCCESS);
 
 }

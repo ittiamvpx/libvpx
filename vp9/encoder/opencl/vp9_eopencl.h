@@ -22,6 +22,11 @@ extern "C" {
 #define NUM_PIXELS_PER_WORKITEM 8
 #define NUM_KERNELS             5
 
+typedef struct {
+  unsigned int sse[EIGHTTAP_SHARP + 1];
+  int sum[EIGHTTAP_SHARP + 1];
+}rd_calc_buffers;
+
 typedef struct VP9_EOPENCL {
   VP9_OPENCL *opencl;
 
@@ -31,6 +36,8 @@ typedef struct VP9_EOPENCL {
   opencl_buffer gpu_output_sub_buffer[GPU_BLOCK_SIZES][MAX_SUB_FRAMES];
 
   opencl_buffer rdopt_parameters;
+
+  cl_mem rd_calc_tmp_buffers;
 
   cl_kernel full_pixel_search[GPU_BLOCK_SIZES];
   cl_kernel rd_calculation_zeromv[GPU_BLOCK_SIZES];

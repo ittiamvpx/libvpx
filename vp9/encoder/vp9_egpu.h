@@ -53,26 +53,23 @@ struct macroblock;
 struct GPU_INPUT {
   MV nearest_mv;
   MV near_mv;
-  INTERP_FILTER filter_type;
-  int mode_context;
-  int rate_mv;
-  int do_newmv;
-  int do_compute;
-} __attribute__ ((aligned(32)));
+  char filter_type;
+  char mode_context;
+  char do_newmv;
+  char do_compute;
+};
 typedef struct GPU_INPUT GPU_INPUT;
 
 struct GPU_OUTPUT {
-  MV mv;
-  int rate_mv;
-  int sum[EIGHTTAP_SHARP + 1];
-  unsigned int sse[EIGHTTAP_SHARP + 1];
-  int returnrate;
   int64_t returndistortion;
   int64_t best_rd;
-  PREDICTION_MODE best_mode;
-  INTERP_FILTER best_pred_filter;
-  int skip_txfm;
-  TX_SIZE tx_size;
+  MV mv;
+  int rate_mv;
+  int returnrate;
+  char best_mode;
+  char best_pred_filter;
+  char skip_txfm;
+  char tx_size;
 } __attribute__ ((aligned(32)));
 typedef struct GPU_OUTPUT GPU_OUTPUT;
 
