@@ -3211,14 +3211,12 @@ static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
     i = GPU_BLOCK_16X16;
     {
 #else
-    x->max_partition_size = sf->max_partition_size;
     // First iteration(i = 0) will run for 32x32 block
     // Second iteration(i = 1) will run for four 16x16 childs blocks
     for (i = 0; i < BLOCKS_PROCESSED_ON_GPU; ++i) {
 #endif
       BLOCK_SIZE bsize = get_actual_block_size(i);
       PC_TREE *pc_tree_i = cpi->pc_root[thread_id]->split[h];
-      PC_TREE *pc_parent_i = cpi->pc_root[thread_id];
       const int ms_32x32 = num_8x8_blocks_wide_lookup[BLOCK_32X32];
       int col_idx_i = (h & 1) * ms_32x32;
       int row_idx_i = (h >> 1) * ms_32x32;
@@ -3229,8 +3227,6 @@ static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
       // This loop runs for each 16x16 block, whenever applicable
       for (j = 0; j < (split_into_16x16 ? 4 : 1); ++j) {
         PC_TREE *pc_tree = split_into_16x16 ? pc_tree_i->split[j] : pc_tree_i;
-        PC_TREE *pc_parent =
-            split_into_16x16 ? pc_parent_i->split[h] : pc_parent_i;
         const int ms_16x16 = num_8x8_blocks_wide_lookup[BLOCK_16X16];
         int col_idx = col_idx_i + ((j & 1) * ms_16x16);
         int row_idx = row_idx_i + (j >> 1) * ms_16x16;
@@ -3243,18 +3239,12 @@ static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
         const int force_vert_split = (actual_mi_col + ms >= cm->mi_cols);
 
         if (force_horz_split || force_vert_split) {
-          vpx_memcpy(pc_tree->none.pred_mv, pc_parent->none.pred_mv,
-                     sizeof(pc_parent->none.pred_mv));
           continue;
         }
         if (actual_mi_col >= tile->mi_col_end ||
             actual_mi_row >= tile->mi_row_end)
           continue;
-        // We make sure Parent MV is not used for 16x16
-        if (split_into_16x16)
-          x->max_partition_size = BLOCK_16X16;
 
-        load_pred_mv(x, &pc_parent->none);
         nonrd_pick_partition(cpi, x, tile, tp, actual_mi_row,
                              actual_mi_col, bsize, &rate, &dist, 0,
                              INT64_MAX, pc_tree);

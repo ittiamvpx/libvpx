@@ -446,7 +446,8 @@ void vp9_mv_pred(VP9_COMP *cpi, MACROBLOCK *x,
   uint8_t *ref_y_ptr;
   const int num_mv_refs = MAX_MV_REF_CANDIDATES +
                     (cpi->sf.adaptive_motion_search &&
-                     block_size < x->max_partition_size);
+                     block_size < x->max_partition_size &&
+                     !x->data_parallel_processing);
 
   MV pred_mv[3];
   pred_mv[0] = mbmi->ref_mvs[ref_frame][0].as_mv;
