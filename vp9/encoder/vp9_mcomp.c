@@ -157,8 +157,7 @@ void vp9_init3smotion_compensation(search_site_config *cfg, int stride) {
 /* estimated cost of a motion vector (r,c) */
 #define MVC(r, c)                                       \
     (mvcost ?                                           \
-     ((mvjcost[((r) != rr) * 2 + ((c) != rc)] +         \
-       mvcost[0][((r) - rr)] + mvcost[1][((c) - rc)]) * \
+     ((300 + mvcost[0][((r) - rr)] + mvcost[1][((c) - rc)]) * \
       error_per_bit + 4096) >> 13 : 0)
 
 
@@ -400,41 +399,46 @@ int vp9_find_best_sub_pixel_tree(const MACROBLOCK *x,
                                  unsigned int *sse1,
                                  const uint8_t *second_pred,
                                  int w, int h) {
+  int hstep_range = 6;
   SETUP_SUBPEL_SEARCH;
   (void) sad_list;  // to silence compiler warning
 
   // Each subsequent iteration checks at least one point in
   // common with the last iteration could be 2 ( if diag selected)
   // 1/2 pel
-  FIRST_LEVEL_CHECKS;
-  if (halfiters > 1) {
-    SECOND_LEVEL_CHECKS;
-  }
-  tr = br;
-  tc = bc;
-
-  // Each subsequent iteration checks at least one point in common with
-  // the last iteration could be 2 ( if diag selected) 1/4 pel
-
-  // Note forced_stop: 0 - full, 1 - qtr only, 2 - half only
-  if (forced_stop != 2) {
-    hstep >>= 1;
+  if (tc - hstep_range >= minc && tc + hstep_range <= maxc &&
+      tr - hstep_range >= minr && tr + hstep_range <= maxr)
+  {
     FIRST_LEVEL_CHECKS;
-    if (quarteriters > 1) {
+    if (halfiters > 1) {
       SECOND_LEVEL_CHECKS;
     }
     tr = br;
     tc = bc;
-  }
 
-  if (allow_hp && vp9_use_mv_hp(ref_mv) && forced_stop == 0) {
-    hstep >>= 1;
-    FIRST_LEVEL_CHECKS;
-    if (eighthiters > 1) {
-      SECOND_LEVEL_CHECKS;
+    // Each subsequent iteration checks at least one point in common with
+    // the last iteration could be 2 ( if diag selected) 1/4 pel
+
+    // Note forced_stop: 0 - full, 1 - qtr only, 2 - half only
+    if (forced_stop != 2) {
+      hstep >>= 1;
+      FIRST_LEVEL_CHECKS;
+      if (quarteriters > 1) {
+        SECOND_LEVEL_CHECKS;
+      }
+      tr = br;
+      tc = bc;
     }
-    tr = br;
-    tc = bc;
+
+    if (allow_hp && vp9_use_mv_hp(ref_mv) && forced_stop == 0) {
+      hstep >>= 1;
+      FIRST_LEVEL_CHECKS;
+      if (eighthiters > 1) {
+        SECOND_LEVEL_CHECKS;
+      }
+      tr = br;
+      tc = bc;
+    }
   }
   // These lines insure static analysis doesn't warn that
   // tr and tc aren't used after the above point.
