@@ -179,7 +179,8 @@ static INLINE const uint8_t *pre(const uint8_t *buf, int stride, int r, int c) {
     else                                                               \
       thismse = vfp->svaf(pre(y, y_stride, r, c), y_stride, sp(c), sp(r), \
                               z, src_stride, &sse, second_pred);       \
-    if ((v = MVC(r, c) + thismse) < besterr) {                         \
+    v = thismse + ((!x->data_parallel_processing) ? MVC(r,c) : 0);     \
+    if (v < besterr) {                                                 \
       besterr = v;                                                     \
       br = r;                                                          \
       bc = c;                                                          \
@@ -199,19 +200,21 @@ static INLINE const uint8_t *pre(const uint8_t *buf, int stride, int r, int c) {
     CHECK_BETTER(down, tr + hstep, tc);                 \
     whichdir = (left < right ? 0 : 1) +                 \
                (up < down ? 0 : 2);                     \
-    switch (whichdir) {                                 \
-      case 0:                                           \
-        CHECK_BETTER(diag, tr - hstep, tc - hstep);     \
-        break;                                          \
-      case 1:                                           \
-        CHECK_BETTER(diag, tr - hstep, tc + hstep);     \
-        break;                                          \
-      case 2:                                           \
-        CHECK_BETTER(diag, tr + hstep, tc - hstep);     \
-        break;                                          \
-      case 3:                                           \
-        CHECK_BETTER(diag, tr + hstep, tc + hstep);     \
-        break;                                          \
+    if(!x->data_parallel_processing) {                  \
+      switch (whichdir) {                               \
+        case 0:                                         \
+          CHECK_BETTER(diag, tr - hstep, tc - hstep);   \
+          break;                                        \
+        case 1:                                         \
+          CHECK_BETTER(diag, tr - hstep, tc + hstep);   \
+          break;                                        \
+        case 2:                                         \
+          CHECK_BETTER(diag, tr + hstep, tc - hstep);   \
+          break;                                        \
+        case 3:                                         \
+          CHECK_BETTER(diag, tr + hstep, tc + hstep);   \
+          break;                                        \
+      }                                                 \
     }                                                   \
   }
 
@@ -292,7 +295,9 @@ static INLINE const uint8_t *pre(const uint8_t *buf, int stride, int r, int c) {
     besterr = vfp->vf(y + offset, y_stride, z, src_stride, sse1);          \
   }                                                                        \
   *distortion = besterr;                                                   \
-  besterr += mv_err_cost(bestmv, ref_mv, mvjcost, mvcost, error_per_bit);
+  if(!x->data_parallel_processing) {                                       \
+    besterr += mv_err_cost(bestmv, ref_mv, mvjcost, mvcost, error_per_bit);\
+  }
 
 int vp9_find_best_sub_pixel_tree_pruned(const MACROBLOCK *x,
                                         MV *bestmv, const MV *ref_mv,

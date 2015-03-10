@@ -343,12 +343,6 @@ static void vp9_opencl_set_kernel_args(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
                            sizeof(cl_mem), gpu_ip);
   status |= clSetKernelArg(eopencl->sub_pixel_search[gpu_bsize], 4,
                            sizeof(cl_mem), gpu_op_subframe);
-  status |= clSetKernelArg(eopencl->sub_pixel_search[gpu_bsize], 5,
-                           sizeof(cl_mem), rdopt_parameters);
-  status |= clSetKernelArg(eopencl->sub_pixel_search[gpu_bsize], 6,
-                           sizeof(cl_int), &mi_rows);
-  status |= clSetKernelArg(eopencl->sub_pixel_search[gpu_bsize], 7,
-                           sizeof(cl_int), &mi_cols);
   assert(status == CL_SUCCESS);
 
   status = clSetKernelArg(eopencl->inter_prediction_and_sse[gpu_bsize], 0,
