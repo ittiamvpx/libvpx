@@ -219,48 +219,19 @@ typedef enum GPU_BLOCK_SIZE {
 #define CLAMP_IT(value, low, high)  \
     (value < low ? low : (value > high ? high : value))
 
-#define BILINEAR_HORIZONTAL(r, c, idx)                               \
-    buffer_offset = ((r >> 3) * stride) + (c >> 3);                  \
-    tmp_ref_frame = ref_frame + buffer_offset;                       \
-    var_filter_block2d_bil_horizontal(tmp_ref_frame,                 \
-                                      BILINEAR_FILTERS_2TAP(sp(c)),  \
-                                      cur_frame, &sse, &sum, stride);\
-    atomic_add(intermediate_int + idx , sum);                        \
-    atomic_add(intermediate_int + idx + 1, sse);
-
-#define BILINEAR_VERTICAL(r, c, idx)                                 \
-    buffer_offset = ((r >> 3) * stride) + (c >> 3);                  \
-    tmp_ref_frame = ref_frame + buffer_offset;                       \
-    var_filter_block2d_bil_vertical(tmp_ref_frame,                   \
-                                    BILINEAR_FILTERS_2TAP(sp(r)),    \
-                                    cur_frame, &sse, &sum, stride);  \
-    atomic_add(intermediate_int + idx , sum);                        \
-    atomic_add(intermediate_int + idx + 1, sse);
-
-#define CHECK_BETTER_SUBPEL(r, c, idx)                              \
-      sum = intermediate_int[idx];                                  \
-      sse = intermediate_int[idx + 1];                              \
-                                                                    \
-      thiserr  = (sse - (((long int)sum * sum)                      \
-              / (BLOCK_SIZE_IN_PIXELS * BLOCK_SIZE_IN_PIXELS)));    \
-                                                                    \
-      if (thiserr < besterr) {                                      \
-        besterr = thiserr;                                          \
-        best_mv.row = r;                                            \
-        best_mv.col = c;                                            \
+#define CHECK_BETTER_SUBPEL(r, c, idx)                                \
+      sum = intermediate_sum_sse[idx];                                \
+      sse = intermediate_sum_sse[idx + 1];                            \
+                                                                      \
+      thiserr  = (sse - (((long int)sum * sum)                        \
+              / (BLOCK_SIZE_IN_PIXELS * BLOCK_SIZE_IN_PIXELS)));      \
+                                                                      \
+      if (thiserr < besterr) {                                        \
+        besterr = thiserr;                                            \
+        best_mv.row = r;                                              \
+        best_mv.col = c;                                              \
       }
 
-#define BILINEAR_BOTH(r, c, idx)                                   \
-      buffer_offset = ((r >> 3) * stride) + (c >> 3);              \
-      tmp_ref_frame = ref_frame + buffer_offset;                   \
-                                                                   \
-      var_filter_block2d_bil_both(tmp_ref_frame, cur_frame, stride,\
-                                  BILINEAR_FILTERS_2TAP(sp(c)),    \
-                                  BILINEAR_FILTERS_2TAP(sp(r)),    \
-                                  &sse, &sum);                     \
-                                                                   \
-      atomic_add(intermediate_int + idx, sum);                     \
-      atomic_add(intermediate_int + idx + 1, sse);
 
 // The VP9_BILINEAR_FILTERS_2TAP macro returns a pointer to the bilinear
 // filter kernel as a 2 tap filter.
@@ -390,9 +361,11 @@ typedef struct GPU_RD_PARAMETERS {
 } GPU_RD_PARAMETERS;
 
 typedef struct {
-  unsigned int sse[EIGHTTAP_SHARP + 1];
-  int sum[EIGHTTAP_SHARP + 1];
+  unsigned int sse[EIGHTTAP_SHARP + 2];
+  int sum[EIGHTTAP_SHARP + 2];
 }rd_calc_buffers;
+
+__constant MV sub_pel_offset[4] = {{0, -1}, {0, 1}, {-1, 0}, {1, 0}};
 
 __constant int nmvjointsadcost[MV_JOINTS] = {600,300,300,300};
 
@@ -779,7 +752,7 @@ void calculate_fullpel_variance(__global uchar *ref_frame,
   *besterr = sse - (((long int)sum * sum) / (BLOCK_SIZE_IN_PIXELS * BLOCK_SIZE_IN_PIXELS));
 }
 
-void var_filter_block2d_bil_both(__global uchar *ref_data,
+inline void var_filter_block2d_bil_both(__global uchar *ref_data,
                                  __global uchar *cur_data,
                                  int stride,
                                  ushort2 horz_filter,
@@ -1503,6 +1476,7 @@ void vp9_full_pixel_search_zeromv(__global uchar *ref_frame,
     __global GPU_INPUT *mv_input,
     __global GPU_OUTPUT *sse_variance_output,
     __global GPU_RD_PARAMETERS *rd_parameters,
+    __global rd_calc_buffers *rd_calc_tmp_buffers,
     int mi_rows,
     int mi_cols
 ) {
@@ -1546,6 +1520,7 @@ void vp9_full_pixel_search_zeromv(__global uchar *ref_frame,
 
   mv_input            += (global_row * global_stride + global_col);
   sse_variance_output += (global_row * global_stride + global_col);
+  rd_calc_tmp_buffers += (global_row * global_stride + global_col);
 
   cur_frame += global_offset;
   uchar8 curr_data;
@@ -1674,12 +1649,16 @@ void vp9_full_pixel_search_zeromv(__global uchar *ref_frame,
     tc = best_mv.col;
 
     if (!(tc - hstep_limit >= minmv.col && tc + hstep_limit <= maxmv.col && tr - hstep_limit >= minmv.row && tr + hstep_limit <= maxmv.row))  {
-      mv_input->do_newmv = 2;
+      mv_input->do_newmv = -1;
     }
 
     calculate_fullpel_variance(tmp_ref, tmp_cur, stride, &besterr, &best_mv);
 
     sse_variance_output->returnrate = besterr;
+
+    __global int *intermediate_sum_sse = (__global int *)rd_calc_tmp_buffers;
+    vstore8(0, 0, intermediate_sum_sse);
+
   }
 
   sse_variance_output->rate_mv = rate_mv;
@@ -1692,110 +1671,248 @@ __kernel
 __attribute__((reqd_work_group_size(BLOCK_SIZE_IN_PIXELS / NUM_PIXELS_PER_WORKITEM,
                                     BLOCK_SIZE_IN_PIXELS / PIXEL_ROWS_PER_WORKITEM,
                                     1)))
-void vp9_sub_pixel_search(__global uchar *ref_frame,
+void vp9_sub_pixel_search_halfpel_filtering(__global uchar *ref_frame,
     __global uchar *cur_frame,
     int stride,
     __global GPU_INPUT *mv_input,
-    __global GPU_OUTPUT *sse_variance_output
+    __global GPU_OUTPUT *sse_variance_output,
+    __global rd_calc_buffers *rd_calc_tmp_buffers
 ) {
-  __local int intermediate_int[8];
-
-  short global_col = get_global_id(0);
   short global_row = get_global_id(1);
-  int global_stride = get_global_size(0);
 
   short group_col = get_group_id(0);
-  short group_row = get_group_id(1);
-  int group_stride = get_num_groups(0);
+  int group_stride = get_num_groups(0) >> 2;
 
-  short local_col  = get_local_id(0);
-  short local_row  = get_local_id(1);
-
+  int local_col = get_local_id(0);
   int global_offset = (global_row * PIXEL_ROWS_PER_WORKITEM * stride) +
-                      (global_col * NUM_PIXELS_PER_WORKITEM);
-
-  mv_input += (global_row / (BLOCK_SIZE_IN_PIXELS / PIXEL_ROWS_PER_WORKITEM) *
-      group_stride + group_col);
-  sse_variance_output += (group_row * group_stride + group_col);
-
+                      ((group_col >> 2) * BLOCK_SIZE_IN_PIXELS) +
+                      (local_col * NUM_PIXELS_PER_WORKITEM);
   global_offset += (VP9_ENC_BORDER_IN_PIXELS * stride) + VP9_ENC_BORDER_IN_PIXELS;
 
-  cur_frame += global_offset;
-  ref_frame += global_offset;
+  int group_offset = (global_row / (BLOCK_SIZE_IN_PIXELS / PIXEL_ROWS_PER_WORKITEM) *
+      group_stride + (group_col >> 2));
+
+  mv_input += group_offset;
 
   if(!mv_input->do_compute)
     goto exit;
 
-  if(mv_input->do_newmv == 2)
+  if(mv_input->do_newmv < 1)
     goto exit;
 
-  if (mv_input->do_newmv)
-  {
-    int sum, tr, tc;
-    unsigned int besterr, sse, thiserr;
+  rd_calc_tmp_buffers += group_offset;
+  sse_variance_output += group_offset;
 
-    MV best_mv = sse_variance_output->mv;
-    MV refmv = mv_input->nearest_mv;
-    char hstep = 4;
-    int buffer_offset;
-    int local_offset;
-    __global uchar *tmp_ref_frame;
 
-    besterr = sse_variance_output->returnrate;
-    local_offset = local_row * LOCAL_STRIDE + local_col;
+  cur_frame += global_offset;
+  ref_frame += global_offset;
 
-    /*Part 1*/
-    {
-      if(local_offset < 8)
-        intermediate_int[local_offset] = 0;
+  int sum;
+  unsigned int sse;
 
-      barrier(CLK_LOCAL_MEM_FENCE);
+  MV best_mv = sse_variance_output->mv;
+  int buffer_offset;
+  int local_offset;
 
-      tr = best_mv.row;
-      tc = best_mv.col;
+  int idx = (group_col & 3);
 
-      BILINEAR_HORIZONTAL(tr, (tc - hstep), 0);
-      BILINEAR_HORIZONTAL(tr, (tc + hstep), 2);
+  __global int *intermediate_sum_sse = (__global int *)rd_calc_tmp_buffers;
 
-      BILINEAR_VERTICAL((tr - hstep), tc, 4);
-      BILINEAR_VERTICAL((tr + hstep), tc, 6);
+  /* Half pel */
 
-      barrier(CLK_LOCAL_MEM_FENCE);
+  const char hstep = 4;
+#if !INTEL_HD_GRAPHICS
+  best_mv = best_mv + sub_pel_offset[idx] * hstep;
+#else
+  best_mv.row = best_mv.row + sub_pel_offset[idx].row * hstep;
+  best_mv.col = best_mv.col + sub_pel_offset[idx].col * hstep;
+#endif
+  idx *= 2;
+  buffer_offset = ((best_mv.row >> 3) * stride) + (best_mv.col >> 3);
+  ref_frame += buffer_offset;
 
-      CHECK_BETTER_SUBPEL(tr, (tc - hstep), 0);
-      CHECK_BETTER_SUBPEL(tr, (tc + hstep), 2);
-      CHECK_BETTER_SUBPEL((tr - hstep), tc, 4);
-      CHECK_BETTER_SUBPEL((tr + hstep), tc, 6);
-    }
-
-    /*Part 2*/
-    {
-      hstep = 2;
-      barrier(CLK_LOCAL_MEM_FENCE);
-
-      if(local_offset < 8)
-        intermediate_int[local_offset] = 0;
-
-      barrier(CLK_LOCAL_MEM_FENCE);
-
-      tr = best_mv.row;
-      tc = best_mv.col;
-
-      BILINEAR_BOTH(tr, (tc - hstep), 0);
-      BILINEAR_BOTH(tr, (tc + hstep), 2);
-      BILINEAR_BOTH((tr - hstep), tc, 4);
-      BILINEAR_BOTH((tr + hstep), tc, 6);
-
-      barrier(CLK_LOCAL_MEM_FENCE);
-
-      CHECK_BETTER_SUBPEL(tr, (tc - hstep), 0);
-      CHECK_BETTER_SUBPEL(tr, (tc + hstep), 2);
-      CHECK_BETTER_SUBPEL((tr - hstep), tc, 4);
-      CHECK_BETTER_SUBPEL((tr + hstep), tc, 6);
-    }
-
-    sse_variance_output->mv = best_mv;
+  if(idx < 4) {
+    var_filter_block2d_bil_horizontal(ref_frame,
+                                      BILINEAR_FILTERS_2TAP(sp(best_mv.col)),
+                                      cur_frame, &sse, &sum, stride);
+    atomic_add(intermediate_sum_sse + idx, sum);
+    atomic_add(intermediate_sum_sse + idx + 1, sse);
+    return;
+  } else {
+    var_filter_block2d_bil_vertical(ref_frame,
+                                    BILINEAR_FILTERS_2TAP(sp(best_mv.row)),
+                                    cur_frame, &sse, &sum, stride);
+    atomic_add(intermediate_sum_sse + idx, sum);
+    atomic_add(intermediate_sum_sse + idx + 1, sse);
+    return;
   }
+exit:
+  return;
+}
+
+__kernel
+void vp9_sub_pixel_search_halfpel_bestmv(__global GPU_INPUT *mv_input,
+    __global GPU_OUTPUT *sse_variance_output,
+    __global rd_calc_buffers *rd_calc_tmp_buffers
+) {
+  short global_col = get_global_id(0);
+  short global_row = get_global_id(1);
+  int global_stride = get_global_size(0);
+
+  mv_input            += (global_row * global_stride + global_col);
+  if(!mv_input->do_compute)
+    goto exit;
+
+  if(mv_input->do_newmv < 1)
+    goto exit;
+
+  sse_variance_output += (global_row * global_stride + global_col);
+  rd_calc_tmp_buffers += (global_row * global_stride + global_col);
+
+
+  int sum, tr, tc;
+  unsigned int besterr, sse, thiserr;
+  const char hstep = 4;
+  __global int *intermediate_sum_sse = (__global int *)rd_calc_tmp_buffers;
+
+  MV best_mv = sse_variance_output->mv;
+  besterr = sse_variance_output->returnrate;
+
+  /*Part 1*/
+  {
+    tr = best_mv.row;
+    tc = best_mv.col;
+
+    CHECK_BETTER_SUBPEL(tr, (tc - hstep), 0);
+    CHECK_BETTER_SUBPEL(tr, (tc + hstep), 2);
+    CHECK_BETTER_SUBPEL((tr - hstep), tc, 4);
+    CHECK_BETTER_SUBPEL((tr + hstep), tc, 6);
+  }
+
+  vstore8(0, 0, intermediate_sum_sse);
+  sse_variance_output->returnrate = besterr;
+  sse_variance_output->mv = best_mv;
+
+exit:
+  return;
+}
+
+__kernel
+__attribute__((reqd_work_group_size(BLOCK_SIZE_IN_PIXELS / NUM_PIXELS_PER_WORKITEM,
+                                    BLOCK_SIZE_IN_PIXELS / PIXEL_ROWS_PER_WORKITEM,
+                                    1)))
+void vp9_sub_pixel_search_quarterpel_filtering(__global uchar *ref_frame,
+    __global uchar *cur_frame,
+    int stride,
+    __global GPU_INPUT *mv_input,
+    __global GPU_OUTPUT *sse_variance_output,
+    __global rd_calc_buffers *rd_calc_tmp_buffers
+) {
+  short global_row = get_global_id(1);
+
+  short group_col = get_group_id(0);
+  int group_stride = get_num_groups(0) >> 2;
+
+  int local_col = get_local_id(0);
+  int global_offset = (global_row * PIXEL_ROWS_PER_WORKITEM * stride) +
+                      ((group_col >> 2) * BLOCK_SIZE_IN_PIXELS) +
+                      (local_col * NUM_PIXELS_PER_WORKITEM);
+  global_offset += (VP9_ENC_BORDER_IN_PIXELS * stride) + VP9_ENC_BORDER_IN_PIXELS;
+
+  int group_offset = (global_row / (BLOCK_SIZE_IN_PIXELS / PIXEL_ROWS_PER_WORKITEM) *
+      group_stride + (group_col >> 2));
+
+  mv_input += group_offset;
+
+  if(!mv_input->do_compute)
+    goto exit;
+
+  if(mv_input->do_newmv < 1)
+    goto exit;
+
+  rd_calc_tmp_buffers += group_offset;
+  sse_variance_output += group_offset;
+
+  cur_frame += global_offset;
+  ref_frame += global_offset;
+
+  int sum;
+  unsigned int sse;
+
+  MV best_mv = sse_variance_output->mv;
+  int buffer_offset;
+
+  int idx = (group_col & 3);
+
+  __global int *intermediate_sum_sse = (__global int *)rd_calc_tmp_buffers;
+
+  /* Quarter pel */
+
+  const char hstep = 2;
+#if !INTEL_HD_GRAPHICS
+  best_mv = best_mv + sub_pel_offset[idx] * hstep;
+#else
+  best_mv.row = best_mv.row + sub_pel_offset[idx].row * hstep;
+  best_mv.col = best_mv.col + sub_pel_offset[idx].col * hstep;
+#endif
+  idx *= 2;
+
+  buffer_offset = ((best_mv.row >> 3) * stride) + (best_mv.col >> 3);
+  ref_frame += buffer_offset;
+
+  var_filter_block2d_bil_both(ref_frame, cur_frame, stride,
+                              BILINEAR_FILTERS_2TAP(sp(best_mv.col)),
+                              BILINEAR_FILTERS_2TAP(sp(best_mv.row)),
+                              &sse, &sum);
+
+  atomic_add(intermediate_sum_sse + idx, sum);
+  atomic_add(intermediate_sum_sse + idx + 1, sse);
+
+exit:
+  return;
+}
+
+__kernel
+void vp9_sub_pixel_search_quarterpel_bestmv(__global GPU_INPUT *mv_input,
+    __global GPU_OUTPUT *sse_variance_output,
+    __global rd_calc_buffers *rd_calc_tmp_buffers
+) {
+  short global_col = get_global_id(0);
+  short global_row = get_global_id(1);
+  int global_stride = get_global_size(0);
+
+  mv_input            += (global_row * global_stride + global_col);
+  if(!mv_input->do_compute)
+    goto exit;
+
+  if(mv_input->do_newmv < 1)
+    goto exit;
+
+  sse_variance_output += (global_row * global_stride + global_col);
+  rd_calc_tmp_buffers += (global_row * global_stride + global_col);
+
+  int sum, tr, tc;
+  unsigned int besterr, sse, thiserr;
+
+  const char hstep = 2;
+  __global int *intermediate_sum_sse = (__global int *)rd_calc_tmp_buffers;
+
+  MV best_mv = sse_variance_output->mv;
+  besterr = sse_variance_output->returnrate;
+
+  /*Part 2*/
+  {
+    tr = best_mv.row;
+    tc = best_mv.col;
+
+    CHECK_BETTER_SUBPEL(tr, (tc - hstep), 0);
+    CHECK_BETTER_SUBPEL(tr, (tc + hstep), 2);
+    CHECK_BETTER_SUBPEL((tr - hstep), tc, 4);
+    CHECK_BETTER_SUBPEL((tr + hstep), tc, 6);
+  }
+
+  sse_variance_output->mv = best_mv;
+
 exit:
   return;
 }
