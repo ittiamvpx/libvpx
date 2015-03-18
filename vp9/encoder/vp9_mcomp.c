@@ -594,18 +594,7 @@ static int vp9_pattern_search(const MACROBLOCK *x,
                                in_what->stride);
             CHECK_BETTER
           }
-        } /*else {
-          for (i = 0; i < num_candidates[s]; i++) {
-            const MV this_mv = {br + candidates[s][i].row,
-                                bc + candidates[s][i].col};
-            if (!is_mv_in(x, &this_mv))
-              continue;
-            thissad = vfp->sdf(what->buf, what->stride,
-                               get_buf_from_mv(in_what, &this_mv),
-                               in_what->stride);
-            CHECK_BETTER
-          }
-        }*/
+        }
 
         if (best_site == -1) {
           continue;
@@ -616,41 +605,32 @@ static int vp9_pattern_search(const MACROBLOCK *x,
         }
       }
 
-      do {
-        int next_chkpts_indices[PATTERN_CANDIDATES_REF];
-        best_site = -1;
-        next_chkpts_indices[0] = (k == 0) ? num_candidates[s] - 1 : k - 1;
-        next_chkpts_indices[1] = k;
-        next_chkpts_indices[2] = (k == num_candidates[s] - 1) ? 0 : k + 1;
+      if (s != 0 || !x->data_parallel_processing) {
+        do {
+          int next_chkpts_indices[PATTERN_CANDIDATES_REF];
+          best_site = -1;
+          next_chkpts_indices[0] = (k == 0) ? num_candidates[s] - 1 : k - 1;
+          next_chkpts_indices[1] = k;
+          next_chkpts_indices[2] = (k == num_candidates[s] - 1) ? 0 : k + 1;
 
-        if (check_bounds(x, br, bc, 1 << s)) {
-          for (i = 0; i < PATTERN_CANDIDATES_REF; i++) {
-            const MV this_mv = {br + candidates[s][next_chkpts_indices[i]].row,
-                                bc + candidates[s][next_chkpts_indices[i]].col};
-            thissad = vfp->sdf(what->buf, what->stride,
-                               get_buf_from_mv(in_what, &this_mv),
-                               in_what->stride);
-            CHECK_BETTER
+          if (check_bounds(x, br, bc, 1 << s)) {
+            for (i = 0; i < PATTERN_CANDIDATES_REF; i++) {
+              const MV this_mv = {br + candidates[s][next_chkpts_indices[i]].row,
+                                  bc + candidates[s][next_chkpts_indices[i]].col};
+              thissad = vfp->sdf(what->buf, what->stride,
+                                 get_buf_from_mv(in_what, &this_mv),
+                                 in_what->stride);
+              CHECK_BETTER
+            }
           }
-        } /*else {
-          for (i = 0; i < PATTERN_CANDIDATES_REF; i++) {
-            const MV this_mv = {br + candidates[s][next_chkpts_indices[i]].row,
-                                bc + candidates[s][next_chkpts_indices[i]].col};
-            if (!is_mv_in(x, &this_mv))
-              continue;
-            thissad = vfp->sdf(what->buf, what->stride,
-                               get_buf_from_mv(in_what, &this_mv),
-                               in_what->stride);
-            CHECK_BETTER
-          }
-        }*/
 
-        if (best_site != -1) {
-          k = next_chkpts_indices[best_site];
-          br += candidates[s][k].row;
-          bc += candidates[s][k].col;
-        }
-      } while (best_site != -1);
+          if (best_site != -1) {
+            k = next_chkpts_indices[best_site];
+            br += candidates[s][k].row;
+            bc += candidates[s][k].col;
+          }
+        } while (best_site != -1);
+      }
     } while (s--);
   }
 
