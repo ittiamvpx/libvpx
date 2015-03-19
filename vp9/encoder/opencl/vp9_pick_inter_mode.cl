@@ -367,6 +367,9 @@ typedef struct {
 
 __constant MV sub_pel_offset[4] = {{0, -1}, {0, 1}, {-1, 0}, {1, 0}};
 
+__constant INTERP_FILTER interp_filter[4] =
+  {EIGHTTAP, EIGHTTAP_SMOOTH, EIGHTTAP, EIGHTTAP_SHARP};
+
 __constant int nmvjointsadcost[MV_JOINTS] = {600,300,300,300};
 
 __constant int hex_num_candidates[MAX_PATTERN_SCALES] = {8, 6};
@@ -1139,7 +1142,6 @@ void vp9_model_rd_from_var_lapndz(unsigned int var, unsigned int n,
 
 void inter_prediction(__global uchar *ref_data,
                       __global uchar *cur_frame,
-                      int stride,
                       int horz_subpel,
                       int vert_subpel,
                       int filter_type,
@@ -1170,10 +1172,6 @@ void inter_prediction(__global uchar *ref_data,
   uchar8 out_uni;
   uchar8 out_bi;
   int i;
-
-  *psum = 0;
-  *psse = 0;
-  barrier(CLK_LOCAL_MEM_FENCE);
 
   if (!vert_subpel) {
     /* L0 only x_frac */
@@ -1225,14 +1223,14 @@ void inter_prediction(__global uchar *ref_data,
       sse += convert_uint4(convert_int4(diff.s0123) * convert_int4(diff.s0123));
       sse += convert_uint4(convert_int4(diff.s4567) * convert_int4(diff.s4567));
 
-      ref_data += stride;
-      cur_frame += stride;
+      ref_data += STRIDE;
+      cur_frame += STRIDE;
     }
     ACCUMULATE_SUM_SSE_INTER_PRED(sum, sse)
   } else if(!horz_subpel) {
     /* L0 only y_frac */
     char8 filt = filter[filter_type][vert_subpel];
-    ref_data -= (3 * stride);
+    ref_data -= (3 * STRIDE);
     for(i = 0; i < PIXEL_ROWS_PER_WORKITEM; i++) {
 
       inter = (short8)(-1 << 14);
@@ -1240,37 +1238,37 @@ void inter_prediction(__global uchar *ref_data,
       tmp = filt.s0;
       inter += convert_short8(ref_u8) * tmp;
 
-      ref_data += stride;
+      ref_data += STRIDE;
       ref_u8 = vload8(0, ref_data);
       tmp = filt.s1;
       inter += convert_short8(ref_u8) * tmp;
 
-      ref_data += stride;
+      ref_data += STRIDE;
       ref_u8 = vload8(0, ref_data);
       tmp = filt.s2;
       inter += convert_short8(ref_u8) * tmp;
 
-      ref_data += stride;
+      ref_data += STRIDE;
       ref_u8 = vload8(0, ref_data);
       tmp = filt.s3;
       inter += convert_short8(ref_u8) * tmp;
 
-      ref_data += stride;
+      ref_data += STRIDE;
       ref_u8 = vload8(0, ref_data);
       tmp = filt.s4;
       inter += convert_short8(ref_u8) * tmp;
 
-      ref_data += stride;
+      ref_data += STRIDE;
       ref_u8 = vload8(0, ref_data);
       tmp = filt.s5;
       inter += convert_short8(ref_u8) * tmp;
 
-      ref_data += stride;
+      ref_data += STRIDE;
       ref_u8 = vload8(0, ref_data);
       tmp = filt.s6;
       inter += convert_short8(ref_u8) * tmp;
 
-      ref_data += stride;
+      ref_data += STRIDE;
       ref_u8 = vload8(0, ref_data);
       tmp = filt.s7;
       inter += convert_short8(ref_u8) * tmp;
@@ -1289,15 +1287,13 @@ void inter_prediction(__global uchar *ref_data,
       sse += convert_uint4(convert_int4(diff.s0123) * convert_int4(diff.s0123));
       sse += convert_uint4(convert_int4(diff.s4567) * convert_int4(diff.s4567));
 
-      ref_data  -= 6 * stride;
-      cur_frame += stride;
+      ref_data  -= 6 * STRIDE;
+      cur_frame += STRIDE;
     }
     ACCUMULATE_SUM_SSE_INTER_PRED(sum, sse)
   } else {
     char8 filt = filter[filter_type][horz_subpel];
-    ref_data -= (3 * stride);
-
-    barrier(CLK_LOCAL_MEM_FENCE);
+    ref_data -= (3 * STRIDE);
 
     for(i = 0; i < PIXEL_ROWS_PER_WORKITEM; i++) {
       inter = (short8)(-1 << 14);
@@ -1326,12 +1322,12 @@ void inter_prediction(__global uchar *ref_data,
       temp_out.s4567 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
       intermediate[inter_offset] = temp_out;
 
-      ref_data += stride;
+      ref_data += STRIDE;
       inter_offset += LOCAL_STRIDE;
     }
 
     if (local_row < 8 / PIXEL_ROWS_PER_WORKITEM) {
-      ref_data += (BLOCK_SIZE_IN_PIXELS - PIXEL_ROWS_PER_WORKITEM) * stride;
+      ref_data += (BLOCK_SIZE_IN_PIXELS - PIXEL_ROWS_PER_WORKITEM) * STRIDE;
       inter_offset += (BLOCK_SIZE_IN_PIXELS - PIXEL_ROWS_PER_WORKITEM) * LOCAL_STRIDE;
 
       for(i = 0; i < PIXEL_ROWS_PER_WORKITEM; i++) {
@@ -1360,7 +1356,7 @@ void inter_prediction(__global uchar *ref_data,
         temp_out.s4567 = convert_uchar4_sat((inter_out1 + tmp1) >> 7);
         intermediate[inter_offset] = temp_out;
 
-        ref_data += stride;
+        ref_data += STRIDE;
         inter_offset += LOCAL_STRIDE;
       }
       inter_offset -= BLOCK_SIZE_IN_PIXELS * LOCAL_STRIDE;
@@ -1412,7 +1408,7 @@ void inter_prediction(__global uchar *ref_data,
       sse += convert_uint4(convert_int4(diff.s4567) * convert_int4(diff.s4567));
 
       intermediate_uchar8 += LOCAL_STRIDE;
-      cur_frame += stride;
+      cur_frame += STRIDE;
     }
     ACCUMULATE_SUM_SSE_INTER_PRED(sum, sse)
   }
@@ -1913,6 +1909,8 @@ void vp9_sub_pixel_search_quarterpel_bestmv(__global GPU_INPUT *mv_input,
     CHECK_BETTER_SUBPEL((tr + hstep), tc, 6);
   }
 
+  vstore8(0, 0, intermediate_sum_sse);
+
   sse_variance_output->mv = best_mv;
 
 exit:
@@ -1925,10 +1923,8 @@ __attribute__((reqd_work_group_size(BLOCK_SIZE_IN_PIXELS / NUM_PIXELS_PER_WORKIT
                                     1)))
 void vp9_inter_prediction_and_sse(__global uchar *ref_frame,
     __global uchar *cur_frame,
-    int stride,
     __global GPU_INPUT *mv_input,
     __global GPU_OUTPUT *sse_variance_output,
-    __global GPU_RD_PARAMETERS *rd_parameters,
     __global rd_calc_buffers *rd_calc_tmp_buffers)
 {
   __local uchar8 intermediate_uchar8[(BLOCK_SIZE_IN_PIXELS * (BLOCK_SIZE_IN_PIXELS + 8)) / NUM_PIXELS_PER_WORKITEM];
@@ -1944,10 +1940,9 @@ void vp9_inter_prediction_and_sse(__global uchar *ref_frame,
   uint sse, variance;
 
 
-  int is_fourth_group = 0;
-  if(group_col % 4 == 3) {
+  int group_idx = group_col % 4;
+  if (group_idx == 3) {
     group_col -= 2;
-    is_fourth_group = 1;
   }
 
   int group_offset = global_row / (BLOCK_SIZE_IN_PIXELS / PIXEL_ROWS_PER_WORKITEM) *
@@ -1957,21 +1952,12 @@ void vp9_inter_prediction_and_sse(__global uchar *ref_frame,
 
   rd_calc_tmp_buffers += group_offset;
 
-  int filter_type;
+  int filter_type = interp_filter[group_idx];
 
-  if (group_col % 2 == 0) {
-    filter_type = EIGHTTAP;
-  } else {
-    if(is_fourth_group == 0)
-      filter_type = EIGHTTAP_SMOOTH;
-    else
-      filter_type = EIGHTTAP_SHARP;
-
-    if(mv_input->filter_type != SWITCHABLE) {
-        group_col += 2;
-        mv_input++;
-        rd_calc_tmp_buffers ++;
-    }
+  if (group_col % 2 != 0 && mv_input->filter_type != SWITCHABLE) {
+    group_col += 2;
+    mv_input++;
+    rd_calc_tmp_buffers ++;
   }
 
   if(!mv_input->do_compute)
@@ -1981,24 +1967,21 @@ void vp9_inter_prediction_and_sse(__global uchar *ref_frame,
     goto exit;
 
   int local_col = get_local_id(0);
-  int global_offset = (global_row * stride * PIXEL_ROWS_PER_WORKITEM) +
+  int global_offset = (global_row * STRIDE * PIXEL_ROWS_PER_WORKITEM) +
       ((group_col / 2) * BLOCK_SIZE_IN_PIXELS) + (local_col * NUM_PIXELS_PER_WORKITEM);
-  global_offset += (VP9_ENC_BORDER_IN_PIXELS * stride) + VP9_ENC_BORDER_IN_PIXELS;
+  global_offset += (VP9_ENC_BORDER_IN_PIXELS * STRIDE) + VP9_ENC_BORDER_IN_PIXELS;
 
   group_offset = group_row * group_stride + (group_col / 2);
   sse_variance_output += group_offset;
 
   cur_frame += global_offset;
-  uchar8 pred_data;
-  PREDICTION_MODE best_mode = ZEROMV;
-  INTERP_FILTER newmv_filter, best_pred_filter = EIGHTTAP;
 
-  GPU_OUTPUT_STAGE1 out_mv;
+  MV best_mv;
 
-  out_mv.mv = sse_variance_output->mv;
-  int mv_row = out_mv.mv.row;
-  int mv_col = out_mv.mv.col;
-  int mv_offset = ((mv_row >> SUBPEL_BITS) * stride) + (mv_col >> SUBPEL_BITS);
+  best_mv = sse_variance_output->mv;
+  int mv_row = best_mv.row;
+  int mv_col = best_mv.col;
+  int mv_offset = ((mv_row >> SUBPEL_BITS) * STRIDE) + (mv_col >> SUBPEL_BITS);
   int horz_subpel = (mv_col & SUBPEL_MASK) << 1;
   int vert_subpel = (mv_row & SUBPEL_MASK) << 1;
 
@@ -2007,7 +1990,7 @@ void vp9_inter_prediction_and_sse(__global uchar *ref_frame,
   if(filter_type != EIGHTTAP && !horz_subpel && !vert_subpel)
     goto exit;
 
-  inter_prediction(ref_frame, cur_frame, stride, horz_subpel, vert_subpel,
+  inter_prediction(ref_frame, cur_frame, horz_subpel, vert_subpel,
                    filter_type, intermediate_uchar8,
                    &rd_calc_tmp_buffers->sum[filter_type],
                    &rd_calc_tmp_buffers->sse[filter_type]);

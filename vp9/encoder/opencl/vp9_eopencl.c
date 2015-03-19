@@ -23,7 +23,7 @@
 #endif
 
 static const int pixel_rows_per_workitem_log2_inter_pred[GPU_BLOCK_SIZES]
-                                                         = {3, 2};
+                                                         = {2, 2};
 
 static const int pixel_rows_per_workitem_log2_full_pixel[GPU_BLOCK_SIZES]
                                                                 = {3, 2};
@@ -384,14 +384,10 @@ static void vp9_opencl_set_kernel_args(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   status |= clSetKernelArg(eopencl->inter_prediction_and_sse[gpu_bsize], 1,
                            sizeof(cl_mem), &img_src->gpu_mem);
   status |= clSetKernelArg(eopencl->inter_prediction_and_sse[gpu_bsize], 2,
-                           sizeof(cl_int), &y_stride);
-  status |= clSetKernelArg(eopencl->inter_prediction_and_sse[gpu_bsize], 3,
                            sizeof(cl_mem), gpu_ip);
-  status |= clSetKernelArg(eopencl->inter_prediction_and_sse[gpu_bsize], 4,
+  status |= clSetKernelArg(eopencl->inter_prediction_and_sse[gpu_bsize], 3,
                            sizeof(cl_mem), gpu_op_subframe);
-  status |= clSetKernelArg(eopencl->inter_prediction_and_sse[gpu_bsize], 5,
-                           sizeof(cl_mem), rdopt_parameters);
-  status |= clSetKernelArg(eopencl->inter_prediction_and_sse[gpu_bsize], 6,
+  status |= clSetKernelArg(eopencl->inter_prediction_and_sse[gpu_bsize], 4,
                            sizeof(cl_mem), &eopencl->rd_calc_tmp_buffers);
   assert(status == CL_SUCCESS);
 
@@ -777,21 +773,25 @@ int vp9_eopencl_init(VP9_COMP *cpi) {
   const char *kernel_file_name= PREFIX_PATH"vp9_pick_inter_mode.cl";
   // TODO(karthick-ittiam) : Fix this hardcoding
   char build_options_full_pixel_search[GPU_BLOCK_SIZES][BUILD_OPTION_LENGTH] = {
-      "-DBLOCK_SIZE_IN_PIXELS=32 -DPIXEL_ROWS_PER_WORKITEM=8 -DINTEL_HD_GRAPHICS=0",
-      "-DBLOCK_SIZE_IN_PIXELS=16 -DPIXEL_ROWS_PER_WORKITEM=4 -DINTEL_HD_GRAPHICS=0"
+      "-DBLOCK_SIZE_IN_PIXELS=32 -DPIXEL_ROWS_PER_WORKITEM=8 -DSTRIDE=0 -DINTEL_HD_GRAPHICS=0",
+      "-DBLOCK_SIZE_IN_PIXELS=16 -DPIXEL_ROWS_PER_WORKITEM=4 -DSTRIDE=0 -DINTEL_HD_GRAPHICS=0"
   };
 
   char build_options_sub_pixel_search[GPU_BLOCK_SIZES][BUILD_OPTION_LENGTH] = {
-      "-DBLOCK_SIZE_IN_PIXELS=32 -DPIXEL_ROWS_PER_WORKITEM=16 -DINTEL_HD_GRAPHICS=0",
-      "-DBLOCK_SIZE_IN_PIXELS=16 -DPIXEL_ROWS_PER_WORKITEM=8 -DINTEL_HD_GRAPHICS=0"
+      "-DBLOCK_SIZE_IN_PIXELS=32 -DPIXEL_ROWS_PER_WORKITEM=16 -DSTRIDE=0 -DINTEL_HD_GRAPHICS=0",
+      "-DBLOCK_SIZE_IN_PIXELS=16 -DPIXEL_ROWS_PER_WORKITEM=8 -DSTRIDE=0 -DINTEL_HD_GRAPHICS=0"
   };
 
   char build_options[GPU_BLOCK_SIZES][BUILD_OPTION_LENGTH] = {
-      "-DBLOCK_SIZE_IN_PIXELS=32 -DPIXEL_ROWS_PER_WORKITEM=8 -DINTEL_HD_GRAPHICS=0",
-      "-DBLOCK_SIZE_IN_PIXELS=16 -DPIXEL_ROWS_PER_WORKITEM=4 -DINTEL_HD_GRAPHICS=0"
+      "-DBLOCK_SIZE_IN_PIXELS=32 -DPIXEL_ROWS_PER_WORKITEM=4 -DINTEL_HD_GRAPHICS=",
+      "-DBLOCK_SIZE_IN_PIXELS=16 -DPIXEL_ROWS_PER_WORKITEM=4 -DINTEL_HD_GRAPHICS="
   };
   char *kernel_src = NULL;
   GPU_BLOCK_SIZE gpu_bsize;
+
+  const int aligned_width = (cm->width + 7) & ~7;
+  const int stride = ((aligned_width + 2 * VP9_ENC_BORDER_IN_PIXELS) + 31) & ~31;
+
 
   egpu->compute_framework = vpx_calloc(1, sizeof(VP9_EOPENCL));
   egpu->alloc_buffers = vp9_opencl_alloc_buffers;
@@ -955,6 +955,7 @@ int vp9_eopencl_init(VP9_COMP *cpi) {
   }
 
   for (gpu_bsize = 0; gpu_bsize < BLOCKS_PROCESSED_ON_GPU; gpu_bsize++) {
+    int string_length = strlen(build_options[gpu_bsize]);
 
     program = clCreateProgramWithSource(opencl->context, 1,
                                         (const char**)(void *)&kernel_src,
@@ -963,9 +964,12 @@ int vp9_eopencl_init(VP9_COMP *cpi) {
     if (status != CL_SUCCESS)
       goto fail;
 
+    // Passing stride as a compile time option. In this way compiler generates
+    // better code for "vp9_inter_prediction_and_sse" kernel.
     if (vendor_id == INTEL_HD_GRAPHICS_ID) {
-      int string_length = strlen(build_options[gpu_bsize]);
-      build_options[gpu_bsize][string_length - 1] = '1';
+      sprintf(build_options[gpu_bsize] + string_length, "1 -DSTRIDE=%d", stride);
+    } else {
+      sprintf(build_options[gpu_bsize] + string_length, "0 -DSTRIDE=%d", stride);
     }
 
     // Build the program
