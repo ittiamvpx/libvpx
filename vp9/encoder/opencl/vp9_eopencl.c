@@ -934,10 +934,8 @@ int vp9_eopencl_init(VP9_COMP *cpi) {
 
     eopencl->sub_pixel_search_halfpel_bestmv[gpu_bsize] = clCreateKernel(
         program, "vp9_sub_pixel_search_halfpel_bestmv", &status);
-    if (status != CL_SUCCESS) {
-      printf("\nsub_pixel_search_halfpel_bestmv compilation failed %d", status);
+    if (status != CL_SUCCESS)
       goto fail;
-    }
 
     eopencl->sub_pixel_search_quarterpel_filtering[gpu_bsize] = clCreateKernel(
         program, "vp9_sub_pixel_search_quarterpel_filtering", &status);
