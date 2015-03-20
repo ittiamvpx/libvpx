@@ -361,9 +361,22 @@ typedef struct GPU_RD_PARAMETERS {
 } GPU_RD_PARAMETERS;
 
 typedef struct {
-  unsigned int sse[EIGHTTAP_SHARP + 2];
-  int sum[EIGHTTAP_SHARP + 2];
-}rd_calc_buffers;
+  int sum;
+  unsigned int sse;
+} SUM_SSE;
+
+typedef struct {
+  SUM_SSE sum_sse[5];
+} halfpel_sum_sse;
+
+typedef struct {
+  SUM_SSE sum_sse[4];
+} quartelpel_sum_sse;
+
+typedef struct {
+  unsigned int sse[EIGHTTAP_SHARP + 1];
+  int sum[EIGHTTAP_SHARP + 1];
+} rd_calc_buffers;
 
 __constant MV sub_pel_offset[4] = {{0, -1}, {0, 1}, {-1, 0}, {1, 0}};
 
@@ -715,44 +728,37 @@ ushort calculate_sad(MV *currentmv,
 
 void calculate_fullpel_variance(__global uchar *ref_frame,
                                 __global uchar *cur_frame,
-                                int stride,
-                                unsigned int *besterr,
-                                MV *submv) {
-  uchar8 ref,cur;
-  int buffer_offset;
-  __global uchar *tmp_ref,*tmp_cur;
-
+                                unsigned int *sse,
+                                int *sum,
+                                int stride) {
+  uchar8 output;
   short8 diff;
   short8 vsum = 0;
   uint4 vsse = 0;
-  int sum;
-  unsigned int sse;
-  int row, col;
+  short row;
 
-  buffer_offset = ((submv->row >> 3) * stride) + (submv->col >> 3);
-  tmp_ref = ref_frame + buffer_offset;
-  tmp_cur = cur_frame;
+  *sse = 0;
+  *sum = 0;
 
-  for (row = 0; row < BLOCK_SIZE_IN_PIXELS; row++) {
-    for (col = 0; col < BLOCK_SIZE_IN_PIXELS; col += 8) {
-      ref = vload8(col / 8, tmp_ref);
-      cur = vload8(col / 8, tmp_cur);
-    diff = convert_short8(ref) - convert_short8(cur);
+  for(row = 0; row < PIXEL_ROWS_PER_WORKITEM; row++) {
+
+    output = vload8(0, ref_frame);
+    ref_frame += stride;
+
+    uchar8 cur = vload8(0, cur_frame);
+    cur_frame += stride;
+
+    diff = convert_short8(output) - convert_short8(cur);
     vsum += diff;
     vsse += convert_uint4(convert_int4(diff.s0123) * convert_int4(diff.s0123));
     vsse += convert_uint4(convert_int4(diff.s4567) * convert_int4(diff.s4567));
-    }
-    tmp_ref += stride;
-    tmp_cur += stride;
   }
   vsum.s0123 = vsum.s0123 + vsum.s4567;
   vsum.s01 = vsum.s01 + vsum.s23;
-  sum = vsum.s0 + vsum.s1;
+  *sum = vsum.s0 + vsum.s1;
 
   vsse.s01 = vsse.s01 + vsse.s23;
-  sse = vsse.s0 + vsse.s1;
-
-  *besterr = sse - (((long int)sum * sum) / (BLOCK_SIZE_IN_PIXELS * BLOCK_SIZE_IN_PIXELS));
+  *sse = vsse.s0 + vsse.s1;
 }
 
 inline void var_filter_block2d_bil_both(__global uchar *ref_data,
@@ -1474,7 +1480,7 @@ void vp9_full_pixel_search_zeromv(__global uchar *ref_frame,
     __global GPU_INPUT *mv_input,
     __global GPU_OUTPUT *sse_variance_output,
     __global GPU_RD_PARAMETERS *rd_parameters,
-    __global rd_calc_buffers *rd_calc_tmp_buffers,
+    __global halfpel_sum_sse *rd_calc_tmp_buffers,
     int mi_rows,
     int mi_cols
 ) {
@@ -1650,12 +1656,9 @@ void vp9_full_pixel_search_zeromv(__global uchar *ref_frame,
       mv_input->do_newmv = -1;
     }
 
-    calculate_fullpel_variance(tmp_ref, tmp_cur, stride, &besterr, &best_mv);
-
-    sse_variance_output->returnrate = besterr;
-
     __global int *intermediate_sum_sse = (__global int *)rd_calc_tmp_buffers;
     vstore8(0, 0, intermediate_sum_sse);
+    vstore2(0, 4, intermediate_sum_sse);
 
   }
 
@@ -1674,7 +1677,7 @@ void vp9_sub_pixel_search_halfpel_filtering(__global uchar *ref_frame,
     int stride,
     __global GPU_INPUT *mv_input,
     __global GPU_OUTPUT *sse_variance_output,
-    __global rd_calc_buffers *rd_calc_tmp_buffers
+    __global halfpel_sum_sse *rd_calc_tmp_buffers
 ) {
   short global_row = get_global_id(1);
 
@@ -1700,7 +1703,6 @@ void vp9_sub_pixel_search_halfpel_filtering(__global uchar *ref_frame,
 
   rd_calc_tmp_buffers += group_offset;
   sse_variance_output += group_offset;
-
 
   cur_frame += global_offset;
   ref_frame += global_offset;
@@ -1729,21 +1731,24 @@ void vp9_sub_pixel_search_halfpel_filtering(__global uchar *ref_frame,
   buffer_offset = ((best_mv.row >> 3) * stride) + (best_mv.col >> 3);
   ref_frame += buffer_offset;
 
+  if(idx == 2) {
+    calculate_fullpel_variance(ref_frame, cur_frame, &sse, &sum, stride);
+    atomic_add(intermediate_sum_sse + 8, sum);
+    atomic_add(intermediate_sum_sse + 8 + 1, sse);
+  }
+
   if(idx < 4) {
     var_filter_block2d_bil_horizontal(ref_frame,
                                       BILINEAR_FILTERS_2TAP(sp(best_mv.col)),
                                       cur_frame, &sse, &sum, stride);
-    atomic_add(intermediate_sum_sse + idx, sum);
-    atomic_add(intermediate_sum_sse + idx + 1, sse);
-    return;
   } else {
     var_filter_block2d_bil_vertical(ref_frame,
                                     BILINEAR_FILTERS_2TAP(sp(best_mv.row)),
                                     cur_frame, &sse, &sum, stride);
-    atomic_add(intermediate_sum_sse + idx, sum);
-    atomic_add(intermediate_sum_sse + idx + 1, sse);
-    return;
   }
+  atomic_add(intermediate_sum_sse + idx, sum);
+  atomic_add(intermediate_sum_sse + idx + 1, sse);
+
 exit:
   return;
 }
@@ -1751,47 +1756,50 @@ exit:
 __kernel
 void vp9_sub_pixel_search_halfpel_bestmv(__global GPU_INPUT *mv_input,
     __global GPU_OUTPUT *sse_variance_output,
-    __global rd_calc_buffers *rd_calc_tmp_buffers
+    __global halfpel_sum_sse *rd_calc_tmp_buffers
 ) {
   short global_col = get_global_id(0);
   short global_row = get_global_id(1);
   int global_stride = get_global_size(0);
+  int group_offset = (global_row * global_stride + global_col);
 
-  mv_input            += (global_row * global_stride + global_col);
+  mv_input            += group_offset;
   if(!mv_input->do_compute)
     goto exit;
 
   if(mv_input->do_newmv < 1)
     goto exit;
 
-  sse_variance_output += (global_row * global_stride + global_col);
-  rd_calc_tmp_buffers += (global_row * global_stride + global_col);
-
+  sse_variance_output += group_offset;
 
   int sum, tr, tc;
   unsigned int besterr, sse, thiserr;
   const char hstep = 4;
-  __global int *intermediate_sum_sse = (__global int *)rd_calc_tmp_buffers;
+  __global int *intermediate_sum_sse = (__global int *)(rd_calc_tmp_buffers + group_offset);
 
   MV best_mv = sse_variance_output->mv;
-  besterr = sse_variance_output->returnrate;
-
+  besterr = INT32_MAX;
   /*Part 1*/
   {
     tr = best_mv.row;
     tc = best_mv.col;
 
+    CHECK_BETTER_SUBPEL(tr, tc, 8);
     CHECK_BETTER_SUBPEL(tr, (tc - hstep), 0);
     CHECK_BETTER_SUBPEL(tr, (tc + hstep), 2);
     CHECK_BETTER_SUBPEL((tr - hstep), tc, 4);
     CHECK_BETTER_SUBPEL((tr + hstep), tc, 6);
   }
 
-  vstore8(0, 0, intermediate_sum_sse);
   sse_variance_output->returnrate = besterr;
   sse_variance_output->mv = best_mv;
 
 exit:
+  intermediate_sum_sse = (__global int *)(rd_calc_tmp_buffers + group_offset);
+
+  vstore8(0, 0, intermediate_sum_sse);
+  vstore2(0, 4, intermediate_sum_sse);
+
   return;
 }
 
@@ -1804,7 +1812,7 @@ void vp9_sub_pixel_search_quarterpel_filtering(__global uchar *ref_frame,
     int stride,
     __global GPU_INPUT *mv_input,
     __global GPU_OUTPUT *sse_variance_output,
-    __global rd_calc_buffers *rd_calc_tmp_buffers
+    __global quartelpel_sum_sse *rd_calc_tmp_buffers
 ) {
   short global_row = get_global_id(1);
 
@@ -1873,7 +1881,7 @@ exit:
 __kernel
 void vp9_sub_pixel_search_quarterpel_bestmv(__global GPU_INPUT *mv_input,
     __global GPU_OUTPUT *sse_variance_output,
-    __global rd_calc_buffers *rd_calc_tmp_buffers
+    __global quartelpel_sum_sse *rd_calc_tmp_buffers
 ) {
   short global_col = get_global_id(0);
   short global_row = get_global_id(1);

@@ -23,9 +23,13 @@ extern "C" {
 #define NUM_KERNELS             8
 
 typedef struct {
-  unsigned int sse[EIGHTTAP_SHARP + 2];
-  int sum[EIGHTTAP_SHARP + 2];
-}rd_calc_buffers;
+  int sum;
+  unsigned int sse;
+} SUM_SSE;
+
+typedef struct {
+  SUM_SSE sum_sse[5];
+} SUM_SSE_BUFFER;
 
 typedef struct VP9_EOPENCL {
   VP9_OPENCL *opencl;

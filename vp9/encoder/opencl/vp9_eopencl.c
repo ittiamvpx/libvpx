@@ -160,7 +160,7 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
 
   // allocate space for intermediate buffers used by gpu kernels
   intermediate_buff_size =
-      max_block_cols * max_block_rows * sizeof(rd_calc_buffers);
+      max_block_cols * max_block_rows * sizeof(SUM_SSE_BUFFER);
   eopencl->rd_calc_tmp_buffers = clCreateBuffer(opencl->context, CL_MEM_READ_WRITE,
                                                 intermediate_buff_size, NULL, &status);
   if (status != CL_SUCCESS)
