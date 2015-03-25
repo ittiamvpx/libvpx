@@ -1433,27 +1433,25 @@ void vp9_full_pixel_search(__global uchar *ref_frame,
                            int mi_rows,
                            int mi_cols) {
   __local int intermediate_int[1];
-  short global_col = get_global_id(0);
   short global_row = get_global_id(1);
-  int global_stride = get_global_size(0);
 
-  int global_offset = ((global_row * PIXEL_ROWS_PER_WORKITEM) * stride) + (global_col * NUM_PIXELS_PER_WORKITEM);
-
-  short group_col    = get_group_id(0);
-  short group_row    = get_group_id(1);
+  short group_col = get_group_id(0);
   int group_stride = get_num_groups(0);
 
-  short local_col  = get_local_id(0);
-  short local_row  = get_local_id(1);
+  int local_col = get_local_id(0);
+  int global_offset = (global_row * PIXEL_ROWS_PER_WORKITEM * stride) +
+                      (group_col * BLOCK_SIZE_IN_PIXELS) +
+                      (local_col * NUM_PIXELS_PER_WORKITEM);
+  global_offset += (VP9_ENC_BORDER_IN_PIXELS * stride) + VP9_ENC_BORDER_IN_PIXELS;
+
+  int group_offset = (global_row / (BLOCK_SIZE_IN_PIXELS / PIXEL_ROWS_PER_WORKITEM) *
+      group_stride + group_col);
 
   MV best_mv, nearest_mv;
 
-  global_offset += (VP9_ENC_BORDER_IN_PIXELS * stride) + VP9_ENC_BORDER_IN_PIXELS;
+  mv_input += group_offset;
 
-  mv_input += (global_row / (BLOCK_SIZE_IN_PIXELS / PIXEL_ROWS_PER_WORKITEM) *
-      group_stride + group_col);
-
-  sse_variance_output += (group_row * group_stride + group_col);
+  sse_variance_output += group_offset;
 
   cur_frame += global_offset;
 
@@ -1958,14 +1956,12 @@ void vp9_inter_prediction_and_sse(__global uchar *ref_frame,
 
   mv_input += group_offset;
 
-  rd_calc_tmp_buffers += group_offset;
-
   int filter_type = interp_filter[group_idx];
 
   if (group_col % 2 != 0 && mv_input->filter_type != SWITCHABLE) {
     group_col += 2;
     mv_input++;
-    rd_calc_tmp_buffers ++;
+    group_offset++;
   }
 
   if(!mv_input->do_compute)
@@ -1979,8 +1975,8 @@ void vp9_inter_prediction_and_sse(__global uchar *ref_frame,
       ((group_col / 2) * BLOCK_SIZE_IN_PIXELS) + (local_col * NUM_PIXELS_PER_WORKITEM);
   global_offset += (VP9_ENC_BORDER_IN_PIXELS * STRIDE) + VP9_ENC_BORDER_IN_PIXELS;
 
-  group_offset = group_row * group_stride + (group_col / 2);
   sse_variance_output += group_offset;
+  rd_calc_tmp_buffers += group_offset;
 
   cur_frame += global_offset;
 
