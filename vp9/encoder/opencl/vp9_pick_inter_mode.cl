@@ -980,6 +980,7 @@ MV full_pixel_pattern_search(__global uchar *ref_frame,
     k = best_site;
   }
 
+#if BLOCK_SIZE_IN_PIXELS != 32
   if (pattern != 0) {
     do {
       best_site = -1;
@@ -1004,6 +1005,7 @@ MV full_pixel_pattern_search(__global uchar *ref_frame,
       }
     } while(best_site != -1);
   }
+#endif
 exit:
   *pbestsad = bestsad;
   best_mv.row = br;

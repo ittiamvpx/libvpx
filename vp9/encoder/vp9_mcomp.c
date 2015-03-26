@@ -512,6 +512,7 @@ static int vp9_pattern_search(const MACROBLOCK *x,
                               const MV candidates[MAX_PATTERN_SCALES]
                                                  [MAX_PATTERN_CANDIDATES]) {
   const MACROBLOCKD *const xd = &x->e_mbd;
+  MB_MODE_INFO *mbmi = &xd->mi[0]->mbmi;
   static const int search_param_to_steps[MAX_MVSEARCH_STEPS] = {
     10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
   };
@@ -605,32 +606,35 @@ static int vp9_pattern_search(const MACROBLOCK *x,
         }
       }
 
-      if (s != 0 || !x->data_parallel_processing) {
-        do {
-          int next_chkpts_indices[PATTERN_CANDIDATES_REF];
-          best_site = -1;
-          next_chkpts_indices[0] = (k == 0) ? num_candidates[s] - 1 : k - 1;
-          next_chkpts_indices[1] = k;
-          next_chkpts_indices[2] = (k == num_candidates[s] - 1) ? 0 : k + 1;
-
-          if (check_bounds(x, br, bc, 1 << s)) {
-            for (i = 0; i < PATTERN_CANDIDATES_REF; i++) {
-              const MV this_mv = {br + candidates[s][next_chkpts_indices[i]].row,
-                                  bc + candidates[s][next_chkpts_indices[i]].col};
-              thissad = vfp->sdf(what->buf, what->stride,
-                                 get_buf_from_mv(in_what, &this_mv),
-                                 in_what->stride);
-              CHECK_BETTER
-            }
-          }
-
-          if (best_site != -1) {
-            k = next_chkpts_indices[best_site];
-            br += candidates[s][k].row;
-            bc += candidates[s][k].col;
-          }
-        } while (best_site != -1);
+      if(x->data_parallel_processing && (mbmi->sb_type == BLOCK_32X32 || s == 0)) {
+        best_site = -1;
+        continue;
       }
+
+      do {
+        int next_chkpts_indices[PATTERN_CANDIDATES_REF];
+        best_site = -1;
+        next_chkpts_indices[0] = (k == 0) ? num_candidates[s] - 1 : k - 1;
+        next_chkpts_indices[1] = k;
+        next_chkpts_indices[2] = (k == num_candidates[s] - 1) ? 0 : k + 1;
+
+        if (check_bounds(x, br, bc, 1 << s)) {
+          for (i = 0; i < PATTERN_CANDIDATES_REF; i++) {
+            const MV this_mv = {br + candidates[s][next_chkpts_indices[i]].row,
+                                bc + candidates[s][next_chkpts_indices[i]].col};
+            thissad = vfp->sdf(what->buf, what->stride,
+                               get_buf_from_mv(in_what, &this_mv),
+                               in_what->stride);
+            CHECK_BETTER
+          }
+        }
+
+        if (best_site != -1) {
+          k = next_chkpts_indices[best_site];
+          br += candidates[s][k].row;
+          bc += candidates[s][k].col;
+        }
+      } while (best_site != -1);
     } while (s--);
   }
 
