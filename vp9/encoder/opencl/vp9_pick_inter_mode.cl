@@ -315,11 +315,6 @@ struct initvalues {
 
 #endif
 
-typedef struct GPU_OUTPUT_STAGE1 {
-  MV mv;
-  int rate_mv;
-} GPU_OUTPUT_STAGE1;
-
 struct GPU_INPUT {
   MV nearest_mv;
   MV near_mv;
@@ -367,11 +362,7 @@ typedef struct {
 
 typedef struct {
   SUM_SSE sum_sse[5];
-} halfpel_sum_sse;
-
-typedef struct {
-  SUM_SSE sum_sse[4];
-} quartelpel_sum_sse;
+} subpel_sum_sse;
 
 typedef struct {
   unsigned int sse[EIGHTTAP_SHARP + 1];
@@ -1480,7 +1471,7 @@ void vp9_full_pixel_search_zeromv(__global uchar *ref_frame,
     __global GPU_INPUT *mv_input,
     __global GPU_OUTPUT *sse_variance_output,
     __global GPU_RD_PARAMETERS *rd_parameters,
-    __global halfpel_sum_sse *rd_calc_tmp_buffers,
+    __global subpel_sum_sse *rd_calc_tmp_buffers,
     int mi_rows,
     int mi_cols
 ) {
@@ -1677,7 +1668,7 @@ void vp9_sub_pixel_search_halfpel_filtering(__global uchar *ref_frame,
     int stride,
     __global GPU_INPUT *mv_input,
     __global GPU_OUTPUT *sse_variance_output,
-    __global halfpel_sum_sse *rd_calc_tmp_buffers
+    __global subpel_sum_sse *rd_calc_tmp_buffers
 ) {
   short global_row = get_global_id(1);
 
@@ -1756,7 +1747,7 @@ exit:
 __kernel
 void vp9_sub_pixel_search_halfpel_bestmv(__global GPU_INPUT *mv_input,
     __global GPU_OUTPUT *sse_variance_output,
-    __global halfpel_sum_sse *rd_calc_tmp_buffers
+    __global subpel_sum_sse *rd_calc_tmp_buffers
 ) {
   short global_col = get_global_id(0);
   short global_row = get_global_id(1);
@@ -1791,15 +1782,11 @@ void vp9_sub_pixel_search_halfpel_bestmv(__global GPU_INPUT *mv_input,
     CHECK_BETTER_SUBPEL((tr + hstep), tc, 6);
   }
 
-  sse_variance_output->returnrate = besterr;
+  intermediate_sum_sse[8] = besterr;
   sse_variance_output->mv = best_mv;
+  vstore8(0, 0, intermediate_sum_sse);
 
 exit:
-  intermediate_sum_sse = (__global int *)(rd_calc_tmp_buffers + group_offset);
-
-  vstore8(0, 0, intermediate_sum_sse);
-  vstore2(0, 4, intermediate_sum_sse);
-
   return;
 }
 
@@ -1812,7 +1799,7 @@ void vp9_sub_pixel_search_quarterpel_filtering(__global uchar *ref_frame,
     int stride,
     __global GPU_INPUT *mv_input,
     __global GPU_OUTPUT *sse_variance_output,
-    __global quartelpel_sum_sse *rd_calc_tmp_buffers
+    __global subpel_sum_sse *rd_calc_tmp_buffers
 ) {
   short global_row = get_global_id(1);
 
@@ -1881,13 +1868,15 @@ exit:
 __kernel
 void vp9_sub_pixel_search_quarterpel_bestmv(__global GPU_INPUT *mv_input,
     __global GPU_OUTPUT *sse_variance_output,
-    __global quartelpel_sum_sse *rd_calc_tmp_buffers
+    __global subpel_sum_sse *rd_calc_tmp_buffers
 ) {
   short global_col = get_global_id(0);
   short global_row = get_global_id(1);
   int global_stride = get_global_size(0);
 
   mv_input            += (global_row * global_stride + global_col);
+  rd_calc_tmp_buffers += (global_row * global_stride + global_col);
+  __global int *intermediate_sum_sse = (__global int *)rd_calc_tmp_buffers;
   if(!mv_input->do_compute)
     goto exit;
 
@@ -1895,16 +1884,14 @@ void vp9_sub_pixel_search_quarterpel_bestmv(__global GPU_INPUT *mv_input,
     goto exit;
 
   sse_variance_output += (global_row * global_stride + global_col);
-  rd_calc_tmp_buffers += (global_row * global_stride + global_col);
 
   int sum, tr, tc;
   unsigned int besterr, sse, thiserr;
 
   const char hstep = 2;
-  __global int *intermediate_sum_sse = (__global int *)rd_calc_tmp_buffers;
 
   MV best_mv = sse_variance_output->mv;
-  besterr = sse_variance_output->returnrate;
+  besterr = intermediate_sum_sse[8];
 
   /*Part 2*/
   {
@@ -1917,11 +1904,12 @@ void vp9_sub_pixel_search_quarterpel_bestmv(__global GPU_INPUT *mv_input,
     CHECK_BETTER_SUBPEL((tr + hstep), tc, 6);
   }
 
-  vstore8(0, 0, intermediate_sum_sse);
 
   sse_variance_output->mv = best_mv;
 
 exit:
+  vstore8(0, 0, intermediate_sum_sse);
+  vstore2(0, 4, intermediate_sum_sse);
   return;
 }
 
@@ -2006,10 +1994,7 @@ exit:
 }
 
 __kernel
-void vp9_rd_calculation(__global uchar *ref_frame,
-    __global uchar *cur_frame,
-    int stride,
-    __global GPU_INPUT *mv_input,
+void vp9_rd_calculation(__global GPU_INPUT *mv_input,
     __global GPU_OUTPUT *sse_variance_output,
     __global GPU_RD_PARAMETERS *rd_parameters,
     __global rd_calc_buffers *rd_calc_tmp_buffers)
@@ -2043,8 +2028,6 @@ void vp9_rd_calculation(__global uchar *ref_frame,
   PREDICTION_MODE best_mode = ZEROMV;
   INTERP_FILTER newmv_filter, best_pred_filter = EIGHTTAP;
 
-  GPU_OUTPUT_STAGE1 out_mv;
-
   if(!mv_input->do_compute)
     goto exit;
 
@@ -2055,9 +2038,9 @@ void vp9_rd_calculation(__global uchar *ref_frame,
   if (BLOCK_SIZE_IN_PIXELS != 32) {
     best_rd = sse_variance_output->best_rd;
   }
-  out_mv.mv = sse_variance_output->mv;
-  int mv_row = out_mv.mv.row;
-  int mv_col = out_mv.mv.col;
+  MV best_mv = sse_variance_output->mv;
+  int mv_row = best_mv.row;
+  int mv_col = best_mv.col;
   int horz_subpel = (mv_col & SUBPEL_MASK) << 1;
   int vert_subpel = (mv_row & SUBPEL_MASK) << 1;
 

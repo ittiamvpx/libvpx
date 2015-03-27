@@ -40,7 +40,7 @@ typedef enum GPU_BLOCK_SIZE {
 // Defines the last block size (from GPU_BLOCK_SIZE enum) that would run on GPU
 // If the last GPU block size is 32x32, 16x16 block size would still run in data
 // parallel mode on CPU without using the parent MV from 32x32.
-#define LAST_GPU_BLOCK_SIZE GPU_BLOCK_32X32
+#define LAST_GPU_BLOCK_SIZE GPU_BLOCK_16X16
 #if CONFIG_GPU_COMPUTE
 #define BLOCKS_PROCESSED_ON_GPU (LAST_GPU_BLOCK_SIZE + 1)
 #else

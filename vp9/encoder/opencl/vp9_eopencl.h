@@ -41,7 +41,7 @@ typedef struct VP9_EOPENCL {
 
   opencl_buffer rdopt_parameters;
 
-  cl_mem rd_calc_tmp_buffers;
+  cl_mem rd_calc_tmp_buffers[GPU_BLOCK_SIZES];
 
   cl_kernel full_pixel_search[GPU_BLOCK_SIZES];
   cl_kernel rd_calculation_zeromv[GPU_BLOCK_SIZES];

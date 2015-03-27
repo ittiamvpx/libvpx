@@ -89,6 +89,7 @@ static void vp9_opencl_set_static_kernel_args(VP9_COMP *cpi,
   VP9_EOPENCL *const eopencl = cpi->egpu.compute_framework;
   cl_mem *gpu_ip = &eopencl->gpu_input[gpu_bsize].opencl_mem;
   cl_mem *gpu_op = &eopencl->gpu_output[gpu_bsize];
+  cl_mem *sum_sse = &eopencl->rd_calc_tmp_buffers[gpu_bsize];
   cl_mem *rdopt_parameters = &eopencl->rdopt_parameters.opencl_mem;
   cl_int mi_rows = cm->mi_rows;
   cl_int mi_cols = cm->mi_cols;
@@ -118,7 +119,7 @@ static void vp9_opencl_set_static_kernel_args(VP9_COMP *cpi,
   status |= clSetKernelArg(eopencl->rd_calculation_zeromv[gpu_bsize], 5,
                            sizeof(cl_mem), rdopt_parameters);
   status |= clSetKernelArg(eopencl->rd_calculation_zeromv[gpu_bsize], 6,
-                           sizeof(cl_mem), &eopencl->rd_calc_tmp_buffers);
+                           sizeof(cl_mem), sum_sse);
   status |= clSetKernelArg(eopencl->rd_calculation_zeromv[gpu_bsize], 7,
                            sizeof(cl_int), &mi_rows);
   status |= clSetKernelArg(eopencl->rd_calculation_zeromv[gpu_bsize], 8,
@@ -132,7 +133,7 @@ static void vp9_opencl_set_static_kernel_args(VP9_COMP *cpi,
   status |= clSetKernelArg(eopencl->sub_pixel_search_halfpel_filtering[gpu_bsize], 4,
                            sizeof(cl_mem), gpu_op);
   status |= clSetKernelArg(eopencl->sub_pixel_search_halfpel_filtering[gpu_bsize], 5,
-                           sizeof(cl_mem), &eopencl->rd_calc_tmp_buffers);
+                           sizeof(cl_mem), sum_sse);
   assert(status == CL_SUCCESS);
 
   status  = clSetKernelArg(eopencl->sub_pixel_search_halfpel_bestmv[gpu_bsize], 0,
@@ -140,7 +141,7 @@ static void vp9_opencl_set_static_kernel_args(VP9_COMP *cpi,
   status |= clSetKernelArg(eopencl->sub_pixel_search_halfpel_bestmv[gpu_bsize], 1,
                            sizeof(cl_mem), gpu_op);
   status |= clSetKernelArg(eopencl->sub_pixel_search_halfpel_bestmv[gpu_bsize], 2,
-                           sizeof(cl_mem), &eopencl->rd_calc_tmp_buffers);
+                           sizeof(cl_mem), sum_sse);
   assert(status == CL_SUCCESS);
 
   status  = clSetKernelArg(eopencl->sub_pixel_search_quarterpel_filtering[gpu_bsize], 2,
@@ -150,7 +151,7 @@ static void vp9_opencl_set_static_kernel_args(VP9_COMP *cpi,
   status |= clSetKernelArg(eopencl->sub_pixel_search_quarterpel_filtering[gpu_bsize], 4,
                            sizeof(cl_mem), gpu_op);
   status |= clSetKernelArg(eopencl->sub_pixel_search_quarterpel_filtering[gpu_bsize], 5,
-                           sizeof(cl_mem), &eopencl->rd_calc_tmp_buffers);
+                           sizeof(cl_mem), sum_sse);
   assert(status == CL_SUCCESS);
 
   status  = clSetKernelArg(eopencl->sub_pixel_search_quarterpel_bestmv[gpu_bsize], 0,
@@ -158,7 +159,7 @@ static void vp9_opencl_set_static_kernel_args(VP9_COMP *cpi,
   status |= clSetKernelArg(eopencl->sub_pixel_search_quarterpel_bestmv[gpu_bsize], 1,
                            sizeof(cl_mem), gpu_op);
   status |= clSetKernelArg(eopencl->sub_pixel_search_quarterpel_bestmv[gpu_bsize], 2,
-                           sizeof(cl_mem), &eopencl->rd_calc_tmp_buffers);
+                           sizeof(cl_mem), sum_sse);
   assert(status == CL_SUCCESS);
 
   status  = clSetKernelArg(eopencl->inter_prediction_and_sse[gpu_bsize], 2,
@@ -166,19 +167,17 @@ static void vp9_opencl_set_static_kernel_args(VP9_COMP *cpi,
   status |= clSetKernelArg(eopencl->inter_prediction_and_sse[gpu_bsize], 3,
                            sizeof(cl_mem), gpu_op);
   status |= clSetKernelArg(eopencl->inter_prediction_and_sse[gpu_bsize], 4,
-                           sizeof(cl_mem), &eopencl->rd_calc_tmp_buffers);
+                           sizeof(cl_mem), sum_sse);
   assert(status == CL_SUCCESS);
 
-  status  = clSetKernelArg(eopencl->rd_calculation[gpu_bsize], 2,
-                           sizeof(cl_int), &y_stride);
-  status |= clSetKernelArg(eopencl->rd_calculation[gpu_bsize], 3,
+  status |= clSetKernelArg(eopencl->rd_calculation[gpu_bsize], 0,
                            sizeof(cl_mem), gpu_ip);
-  status |= clSetKernelArg(eopencl->rd_calculation[gpu_bsize], 4,
+  status |= clSetKernelArg(eopencl->rd_calculation[gpu_bsize], 1,
                            sizeof(cl_mem), gpu_op);
-  status |= clSetKernelArg(eopencl->rd_calculation[gpu_bsize], 5,
+  status |= clSetKernelArg(eopencl->rd_calculation[gpu_bsize], 2,
                            sizeof(cl_mem), rdopt_parameters);
-  status |= clSetKernelArg(eopencl->rd_calculation[gpu_bsize], 6,
-                           sizeof(cl_mem), &eopencl->rd_calc_tmp_buffers);
+  status |= clSetKernelArg(eopencl->rd_calculation[gpu_bsize], 3,
+                           sizeof(cl_mem), sum_sse);
   assert(status == CL_SUCCESS);
 
 }
@@ -220,12 +219,6 @@ static void vp9_opencl_set_dynamic_kernel_args(VP9_COMP *cpi,
                            sizeof(cl_mem), &img_src->gpu_mem);
   assert(status == CL_SUCCESS);
 
-  status = clSetKernelArg(eopencl->rd_calculation[gpu_bsize], 0,
-                          sizeof(cl_mem), &frm_ref->gpu_mem);
-  status |= clSetKernelArg(eopencl->rd_calculation[gpu_bsize], 1,
-                           sizeof(cl_mem), &img_src->gpu_mem);
-  assert(status == CL_SUCCESS);
-
 }
 
 static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
@@ -236,7 +229,6 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
   cl_int status;
   GPU_BLOCK_SIZE gpu_bsize;
   opencl_buffer *rdopt_parameters = &eopencl->rdopt_parameters;
-  int max_block_cols = 0, max_block_rows = 0, intermediate_buff_size;
 
   // alloc buffer for gpu rd params
   rdopt_parameters->size = sizeof(GPU_RD_PARAMETERS);
@@ -254,9 +246,6 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
     opencl_buffer *gpuinput_b_args = &eopencl->gpu_input[gpu_bsize];
     int subframe_idx;
 
-    max_block_cols = MAX(max_block_cols, block_cols);
-    max_block_rows = MAX(max_block_rows, block_rows);
-
     // alloc buffer for gpu input
     gpuinput_b_args->size = alloc_size * sizeof(GPU_INPUT);
     gpuinput_b_args->opencl_mem = clCreateBuffer(
@@ -269,6 +258,12 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
     eopencl->gpu_output[gpu_bsize] = clCreateBuffer(
         opencl->context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR,
         alloc_size * sizeof(GPU_OUTPUT), NULL, &status);
+    if (status != CL_SUCCESS)
+      goto fail;
+
+    eopencl->rd_calc_tmp_buffers[gpu_bsize] = clCreateBuffer(
+        opencl->context,  CL_MEM_READ_WRITE,
+        alloc_size * sizeof(SUM_SSE_BUFFER), NULL, &status);
     if (status != CL_SUCCESS)
       goto fail;
 
@@ -302,14 +297,6 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
         goto fail;
     }
   }
-
-  // allocate space for intermediate buffers used by gpu kernels
-  intermediate_buff_size =
-      max_block_cols * max_block_rows * sizeof(SUM_SSE_BUFFER);
-  eopencl->rd_calc_tmp_buffers = clCreateBuffer(opencl->context, CL_MEM_READ_WRITE,
-                                                intermediate_buff_size, NULL, &status);
-  if (status != CL_SUCCESS)
-    goto fail;
 
   for (gpu_bsize = 0; gpu_bsize < BLOCKS_PROCESSED_ON_GPU; gpu_bsize++) {
     vp9_opencl_set_static_kernel_args(cpi, gpu_bsize);
@@ -368,11 +355,12 @@ static void vp9_opencl_free_buffers(VP9_COMP *cpi) {
     status = clReleaseMemObject(eopencl->gpu_output[gpu_bsize]);
     if (status != CL_SUCCESS)
       goto fail;
+
+    status = clReleaseMemObject(eopencl->rd_calc_tmp_buffers[gpu_bsize]);
+    if (status != CL_SUCCESS)
+      goto fail;
   }
 
-  status = clReleaseMemObject(eopencl->rd_calc_tmp_buffers);
-  if (status != CL_SUCCESS)
-    goto fail;
 
   return;
 
