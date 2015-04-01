@@ -26,7 +26,7 @@ void find_mv_refs_idx(const VP9_COMMON *cm, const MACROBLOCKD *xd,
   MODE_INFO **const mi_grid = data_parallel_processing
         ? &cm->prev_mi_grid_visible[mi_row * xd->mi_stride + mi_col]
         : xd->mi;
-  const MODE_INFO *prev_mi = !cm->error_resilient_mode && cm->prev_mi
+  const MODE_INFO *prev_mi = (data_parallel_processing || (!cm->error_resilient_mode && cm->prev_mi))
         ? cm->prev_mi_grid_visible[mi_row * xd->mi_stride + mi_col]
         : NULL;
   const MB_MODE_INFO *const prev_mbmi = prev_mi ? &prev_mi->mbmi : NULL;

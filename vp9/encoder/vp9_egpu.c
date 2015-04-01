@@ -98,7 +98,7 @@ void vp9_alloc_gpu_interface_buffers(VP9_COMP *cpi) {
 #if !CONFIG_GPU_COMPUTE
   for (gpu_bsize = GPU_BLOCK_32X32; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
 #else
-  if(LAST_GPU_BLOCK_SIZE >= GPU_BLOCK_16X16)
+  if (LAST_GPU_BLOCK_SIZE >= GPU_BLOCK_16X16)
     return;
   // Allocate only for 16x16 block size, if required
   gpu_bsize = GPU_BLOCK_16X16;
@@ -120,7 +120,7 @@ void vp9_free_gpu_interface_buffers(VP9_COMP *cpi) {
 #if !CONFIG_GPU_COMPUTE
   for (gpu_bsize = GPU_BLOCK_32X32; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
 #else
-  if(LAST_GPU_BLOCK_SIZE >= GPU_BLOCK_16X16)
+  if (LAST_GPU_BLOCK_SIZE >= GPU_BLOCK_16X16)
     return;
   // Free only for 16x16 block size, if required
   gpu_bsize = GPU_BLOCK_16X16;
@@ -175,7 +175,7 @@ static void vp9_gpu_fill_rd_parameters(VP9_COMP *cpi, MACROBLOCK *const x) {
              sizeof(rd_param_ptr->mvcost[1]));
   rd_param_ptr->sad_per_bit = cpi->mb.sadperbit16;
   rd_param_ptr->error_per_bit = cpi->mb.errorperbit;
-  for(i = 0; i < MV_JOINTS; i++) {
+  for (i = 0; i < MV_JOINTS; i++) {
     rd_param_ptr->nmvjointcost[i] = x->nmvjointcost[i];
   }
 
@@ -237,7 +237,7 @@ static void vp9_gpu_fill_input_block(VP9_COMP *cpi, const TileInfo *const tile,
   gpu_input->do_compute   = 1;
   gpu_input->mode_context = mbmi->mode_context[ref_frame];
 
-  if(pred_filter_search)
+  if (pred_filter_search)
     gpu_input->filter_type = SWITCHABLE;
   else
     gpu_input->filter_type = EIGHTTAP;
@@ -307,7 +307,7 @@ static void vp9_gpu_fill_mv_input(VP9_COMP *cpi, const TileInfo * const tile) {
             const int pred_filter_search = cm->interp_filter == SWITCHABLE ?
                 (((mi_row + mi_col) >> bsl) +
                  get_chessboard_index(cm->current_video_frame)) & 0x1 : 0;
-            if(pred_filter_search)
+            if (pred_filter_search)
               gpu_input->filter_type = SWITCHABLE;
             else
               gpu_input->filter_type = EIGHTTAP;

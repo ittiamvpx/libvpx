@@ -126,7 +126,7 @@ int vp9_opencl_unmap_buffer(VP9_OPENCL *const opencl,
     if (status != CL_SUCCESS)
       goto fail;
 
-    if(is_blocking == CL_TRUE) {
+    if (is_blocking == CL_TRUE) {
       status = clFinish(opencl->cmd_queue);
       if (status != CL_SUCCESS)
         goto fail;

@@ -200,7 +200,7 @@ static INLINE const uint8_t *pre(const uint8_t *buf, int stride, int r, int c) {
     CHECK_BETTER(down, tr + hstep, tc);                 \
     whichdir = (left < right ? 0 : 1) +                 \
                (up < down ? 0 : 2);                     \
-    if(!x->data_parallel_processing) {                  \
+    if (!x->data_parallel_processing) {                 \
       switch (whichdir) {                               \
         case 0:                                         \
           CHECK_BETTER(diag, tr - hstep, tc - hstep);   \
@@ -295,7 +295,7 @@ static INLINE const uint8_t *pre(const uint8_t *buf, int stride, int r, int c) {
     besterr = vfp->vf(y + offset, y_stride, z, src_stride, sse1);          \
   }                                                                        \
   *distortion = besterr;                                                   \
-  if(!x->data_parallel_processing) {                                       \
+  if (!x->data_parallel_processing) {                                      \
     besterr += mv_err_cost(bestmv, ref_mv, mvjcost, mvcost, error_per_bit);\
   }
 
@@ -606,7 +606,8 @@ static int vp9_pattern_search(const MACROBLOCK *x,
         }
       }
 
-      if(x->data_parallel_processing && (mbmi->sb_type == BLOCK_32X32 || s == 0)) {
+      if (x->data_parallel_processing
+          && (mbmi->sb_type == BLOCK_32X32 || s == 0)) {
         best_site = -1;
         continue;
       }

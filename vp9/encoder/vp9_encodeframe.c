@@ -2820,7 +2820,7 @@ static void nonrd_pick_partition(VP9_COMP *cpi, MACROBLOCK *const x,
 
     if (this_rate != INT_MAX) {
       int pl = partition_plane_context(xd, mi_row, mi_col, bsize);
-      if(!x->data_parallel_processing)
+      if (!x->data_parallel_processing)
         this_rate += cpi->partition_cost[pl][PARTITION_NONE];
       sum_rd = RDCOST(x->rdmult, x->rddiv, this_rate, this_dist);
       if (sum_rd < best_rd) {
@@ -3100,7 +3100,7 @@ static void nonrd_use_partition(VP9_COMP *cpi, MACROBLOCK *const x,
       pc_tree->vertical[0].skip_txfm[0] = x->skip_txfm[0];
       pc_tree->vertical[0].skip = x->skip;
       if (mi_col + hbs < cm->mi_cols) {
-        if(x->data_parallel_processing)
+        if (x->data_parallel_processing)
           vp9_zero(x->pred_mv);
         nonrd_pick_sb_modes(cpi, x, tile, mi_row, mi_col + hbs,
                             &rate, &dist, subsize, &pc_tree->vertical[1]);
@@ -3121,7 +3121,7 @@ static void nonrd_use_partition(VP9_COMP *cpi, MACROBLOCK *const x,
       pc_tree->horizontal[0].skip_txfm[0] = x->skip_txfm[0];
       pc_tree->horizontal[0].skip = x->skip;
       if (mi_row + hbs < cm->mi_rows) {
-        if(x->data_parallel_processing)
+        if (x->data_parallel_processing)
           vp9_zero(x->pred_mv);
         nonrd_pick_sb_modes(cpi, x, tile, mi_row + hbs, mi_col,
                             &rate, &dist, subsize, &pc_tree->horizontal[0]);
@@ -3301,7 +3301,7 @@ static void encode_nonrd_sb_row(VP9_COMP *cpi, MACROBLOCK *const x,
                                       (void **)&gpu_output_subframe,
                                       subframe_idx);
 
-          if(subframe_idx == 0) {
+          if (subframe_idx == 0) {
             cpi->gpu_output_base[gpu_bsize] = gpu_output_subframe;
           } else {
             // Check if the acquired memory pointer for the given subframe is
@@ -3627,7 +3627,7 @@ static void encode_tiles(VP9_COMP *cpi) {
     x->data_parallel_processing = 1;
 #if CONFIG_GPU_COMPUTE
     vp9_gpu_mv_compute(cpi, x);
-    if(LAST_GPU_BLOCK_SIZE < GPU_BLOCK_16X16)
+    if (LAST_GPU_BLOCK_SIZE < GPU_BLOCK_16X16)
       encode_sb_rows(cpi, x, 0, cm->mi_rows, MI_BLOCK_SIZE);
 #else
     encode_sb_rows(cpi, x, 0, cm->mi_rows, MI_BLOCK_SIZE);

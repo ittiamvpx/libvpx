@@ -473,7 +473,7 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   cl_event *event_ptr[NUM_KERNELS];
   int i;
 
-  for(i = 0; i < NUM_KERNELS; i++) {
+  for (i = 0; i < NUM_KERNELS; i++) {
 #if OPENCL_PROFILING
     event_ptr[i] = &event[i];
 #else
@@ -669,7 +669,7 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   assert(status == CL_SUCCESS);
 
 #if OPENCL_PROFILING
-  for(i = 0; i < NUM_KERNELS; i++) {
+  for (i = 0; i < NUM_KERNELS; i++) {
     cl_ulong time_elapsed;
     status = clWaitForEvents(1, event_ptr[i]);
     assert(status == CL_SUCCESS);
@@ -709,8 +709,8 @@ static void vp9_opencl_remove(VP9_COMP *cpi) {
   fprintf(stdout, "\nOPENCL PROFILE RESULTS\n");
 #endif
 
-  for(i = 0; i < MAX_SUB_FRAMES; i++) {
-    if(eopencl->event[i] != NULL) {
+  for (i = 0; i < MAX_SUB_FRAMES; i++) {
+    if (eopencl->event[i] != NULL) {
       status = clReleaseEvent(eopencl->event[i]);
       eopencl->event[i] = NULL;
       assert(status == CL_SUCCESS);
@@ -720,7 +720,7 @@ static void vp9_opencl_remove(VP9_COMP *cpi) {
   for (gpu_bsize = 0; gpu_bsize < BLOCKS_PROCESSED_ON_GPU; gpu_bsize++) {
 #if OPENCL_PROFILING
     fprintf(stdout, "\nBlock size idx = %d\n", gpu_bsize);
-    for(i = 0; i < NUM_KERNELS; i++) {
+    for (i = 0; i < NUM_KERNELS; i++) {
       total[i] += eopencl->total_time_taken[gpu_bsize][i];
       fprintf(stdout, "\tKernel %d - TOTAL = %"PRIu64" microseconds\n", i,
               eopencl->total_time_taken[gpu_bsize][i]);
@@ -754,7 +754,7 @@ static void vp9_opencl_remove(VP9_COMP *cpi) {
 
 #if OPENCL_PROFILING
   fprintf(stdout, "\nTOTAL FOR ALL BLOCK SIZES\n");
-  for(i = 0; i < NUM_KERNELS; i++) {
+  for (i = 0; i < NUM_KERNELS; i++) {
     grand_total += total[i];
     fprintf(stdout,
             "\tKernel %d - TOTAL ALL BLOCK SIZES = %"PRIu64" microseconds\n",
@@ -1038,7 +1038,7 @@ int vp9_eopencl_init(VP9_COMP *cpi) {
   return 0;
 
 fail:
-  if(kernel_src != NULL)
+  if (kernel_src != NULL)
     vpx_free(kernel_src);
   return 1;
 }
