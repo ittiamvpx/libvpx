@@ -600,6 +600,10 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
       if (x->data_parallel_processing && bsize == BLOCK_32X32 && this_mode == ZEROMV)
         assert(!(cpi->sf.inter_mode_mask[bsize] & (1 << this_mode)));
 
+      if (x->data_parallel_processing && bsize == BLOCK_16X16 &&
+          this_mode == NEWMV && skip_txfm)
+        continue;
+
       if (!(cpi->sf.inter_mode_mask[bsize] & (1 << this_mode)))
         continue;
 

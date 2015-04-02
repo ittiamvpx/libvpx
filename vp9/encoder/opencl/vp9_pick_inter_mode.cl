@@ -1620,6 +1620,12 @@ void vp9_full_pixel_search_zeromv(__global uchar *ref_frame,
   mv_input->do_newmv = !(RDCOST(rd_parameters->rd_mult, rd_parameters->rd_div,
                          (rate_mv + rate_mode), 0) > best_rd);
 
+#if BLOCK_SIZE_IN_PIXELS == 16
+  if (skip_txfm) {
+    mv_input->do_newmv = 0;
+  }
+#endif
+
   if (mv_input->do_newmv) {
     unsigned int besterr;
     int error_per_bit = rd_parameters->error_per_bit;
