@@ -2196,6 +2196,9 @@ static void encode_frame_to_data_rate(VP9_COMP *cpi,
   VP9_COMMON *const cm = &cpi->common;
   const VP9EncoderConfig *const oxcf = &cpi->oxcf;
   struct segmentation *const seg = &cm->seg;
+#if CONFIG_GPU_COMPUTE
+  VP9_EGPU *egpu = &cpi->egpu;
+#endif
   TX_SIZE t;
   int q;
   int top_index;
@@ -2402,6 +2405,9 @@ static void encode_frame_to_data_rate(VP9_COMP *cpi,
     loopfilter_frame(cpi);
   }
 
+#if CONFIG_GPU_COMPUTE
+  egpu->frame_cache_sync(cpi, cm->frame_to_show);
+#endif
 
   // build the bitstream
   vp9_pack_bitstream(cpi, dest, size);

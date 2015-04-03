@@ -26,7 +26,7 @@ extern "C" {
 #include "vp9/encoder/vp9_rd.h"
 
 #define GPU_INTER_MODES 2 // ZEROMV and NEWMV
-#define MAX_SUB_FRAMES 4
+#define MAX_SUB_FRAMES 3
 #define CPU_SUB_FRAMES 0
 
 // Block sizes for which MV computations are done in GPU
@@ -97,18 +97,18 @@ typedef struct SubFrameInfo {
 typedef struct VP9_EGPU {
   void *compute_framework;
   GPU_INPUT *gpu_input[GPU_BLOCK_SIZES];
+  GPU_RD_PARAMETERS *gpu_rd_parameters;
 
   void (*alloc_buffers)(struct VP9_COMP *cpi);
   void (*free_buffers)(struct VP9_COMP *cpi);
-  void (*acquire_input_buffer)(struct VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
-                               void **host_ptr);
   void (*acquire_output_buffer)(struct VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
                                 void **host_ptr, int sub_frame_idx);
-  void (*acquire_rd_param_buffer)(struct VP9_COMP *cpi, void **host_ptr);
   void (*enc_sync_read)(struct VP9_COMP *cpi, int event_id);
   void (*execute)(struct VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
                   int sub_frame_idx);
   void (*remove)(struct VP9_COMP *cpi);
+  void (*prepare_control_buffers)(struct VP9_COMP *cpi);
+  void (*frame_cache_sync)(struct VP9_COMP *cpi, YV12_BUFFER_CONFIG *yuv);
 } VP9_EGPU;
 
 extern const BLOCK_SIZE vp9_actual_block_size_lookup[GPU_BLOCK_SIZES];

@@ -74,7 +74,7 @@ static void vp9_opencl_acquire_frame_buffers(VP9_COMMON *cm, void **opencl_mem,
 
   if (*mapped_pointer == NULL) {
     *mapped_pointer =
-        clEnqueueMapBuffer(opencl->cmd_queue_memory, *opencl_mem, CL_TRUE,
+        clEnqueueMapBuffer(opencl->cmd_queue, *opencl_mem, CL_FALSE,
                            CL_MAP_READ | CL_MAP_WRITE, 0, size, 0,
                            NULL, NULL, &status);
     if (status != CL_SUCCESS)
@@ -87,16 +87,21 @@ fail:
   assert(0);
 }
 
-// NOTE : Mapping happens in a different command queue than NDRangeKernel
+// NOTE : Mapping happens in a different command queue than NDRangeKernel if it
+// is a blocking one. Otherwise blocking maps will wait till the completion of
+// NDRangeKernel commands.
 int vp9_opencl_map_buffer(VP9_OPENCL *const opencl,
                           opencl_buffer *opencl_buf,
-                          cl_map_flags map_flags) {
+                          cl_map_flags map_flags,
+                          cl_bool is_blocking) {
   cl_int status;
 
   if (opencl_buf->mapped_pointer == NULL) {
-    opencl_buf->mapped_pointer = clEnqueueMapBuffer(opencl->cmd_queue_memory,
+    cl_command_queue cmd_queue = is_blocking ?
+        opencl->cmd_queue_memory : opencl->cmd_queue;
+    opencl_buf->mapped_pointer = clEnqueueMapBuffer(cmd_queue,
                                                     opencl_buf->opencl_mem,
-                                                    CL_TRUE,
+                                                    is_blocking,
                                                     map_flags,
                                                     0,
                                                     opencl_buf->size,

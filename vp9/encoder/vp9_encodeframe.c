@@ -3317,6 +3317,9 @@ static void encode_nonrd_sb_row(VP9_COMP *cpi, MACROBLOCK *const x,
 
             assert(gpu_output_subframe - cpi->gpu_output_base[gpu_bsize] ==
                    block_index_row * blocks_in_row);
+
+            if (subframe_idx == MAX_SUB_FRAMES - 1)
+              egpu->prepare_control_buffers(cpi);
           }
         }
       }

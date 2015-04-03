@@ -146,10 +146,8 @@ static void vp9_gpu_fill_rd_parameters(VP9_COMP *cpi, MACROBLOCK *const x) {
   MACROBLOCKD *const xd = &x->e_mbd;
   struct macroblockd_plane *const pd = &xd->plane[0];
   GPU_BLOCK_SIZE gpu_bsize;
-  GPU_RD_PARAMETERS *rd_param_ptr;
+  GPU_RD_PARAMETERS *rd_param_ptr = egpu->gpu_rd_parameters;
   int i;
-
-  egpu->acquire_rd_param_buffer(cpi, (void **)&rd_param_ptr);
 
   rd_param_ptr->rd_mult = cpi->rd.RDMULT;
   rd_param_ptr->rd_div = cpi->rd.RDDIV;
@@ -249,7 +247,6 @@ static void vp9_gpu_fill_mv_input(VP9_COMP *cpi, const TileInfo * const tile) {
   int mi_row, mi_col;
   VP9_EGPU *egpu = &cpi->egpu;
   VP9_COMMON * const cm = &cpi->common;
-  GPU_INPUT *gpu_input_base;
   GPU_BLOCK_SIZE gpu_bsize;
 
   if (!sf->partition_check) {
@@ -277,8 +274,7 @@ static void vp9_gpu_fill_mv_input(VP9_COMP *cpi, const TileInfo * const tile) {
     const BLOCK_SIZE bsize = get_actual_block_size(gpu_bsize);
     const int mi_row_step = num_8x8_blocks_high_lookup[bsize];
     const int mi_col_step = num_8x8_blocks_wide_lookup[bsize];
-
-    egpu->acquire_input_buffer(cpi, gpu_bsize, (void **) &gpu_input_base);
+    GPU_INPUT *gpu_input_base = egpu->gpu_input[gpu_bsize];
 
     for (mi_row = tile->mi_row_start; mi_row < tile->mi_row_end; mi_row +=
         mi_row_step) {
@@ -332,6 +328,8 @@ void vp9_gpu_mv_compute(VP9_COMP *cpi, MACROBLOCK *const x) {
   GPU_BLOCK_SIZE gpu_bsize;
   int subframe_idx;
 
+  egpu->frame_cache_sync(cpi, cpi->Source);
+
   // fill rd param info
   vp9_gpu_fill_rd_parameters(cpi, x);
   // fill mv info
@@ -343,6 +341,7 @@ void vp9_gpu_mv_compute(VP9_COMP *cpi, MACROBLOCK *const x) {
       vp9_gpu_fill_mv_input(cpi, &tile);
     }
   }
+
   // enqueue kernels for gpu
   for (subframe_idx = CPU_SUB_FRAMES; subframe_idx < MAX_SUB_FRAMES;
        subframe_idx++) {
@@ -350,10 +349,6 @@ void vp9_gpu_mv_compute(VP9_COMP *cpi, MACROBLOCK *const x) {
       egpu->execute(cpi, gpu_bsize, subframe_idx);
     }
   }
-  // re-map source and reference pointers before starting cpu side processing
-  vp9_acquire_frame_buffer(cm, cpi->Source);
-  vp9_acquire_frame_buffer(cm, get_ref_frame_buffer(cpi, LAST_FRAME));
-
 }
 
 #endif

@@ -35,7 +35,8 @@ typedef struct VP9_OPENCL {
 
 int vp9_opencl_map_buffer(VP9_OPENCL *const opencl,
                           opencl_buffer *opencl_buf,
-                          cl_map_flags map_flags);
+                          cl_map_flags map_flags,
+                          cl_bool is_blocking);
 
 int vp9_opencl_unmap_buffer(VP9_OPENCL *const opencl,
                             opencl_buffer *opencl_buf,
