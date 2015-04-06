@@ -2406,7 +2406,8 @@ static void encode_frame_to_data_rate(VP9_COMP *cpi,
   }
 
 #if CONFIG_GPU_COMPUTE
-  egpu->frame_cache_sync(cpi, cm->frame_to_show);
+  if (cm->use_gpu)
+    egpu->frame_cache_sync(cpi, cm->frame_to_show);
 #endif
 
   // build the bitstream
