@@ -333,6 +333,7 @@ typedef struct VP9_COMP {
 
   // pointer to GPU output Buffers
   GPU_OUTPUT *gpu_output_base[GPU_BLOCK_SIZES];
+  int blocks_in_row[GPU_BLOCK_SIZES];
 
   // encoder thread handle
   VP9Worker *enc_thread_hndl;

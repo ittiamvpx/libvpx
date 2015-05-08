@@ -1960,6 +1960,9 @@ void vp9_inter_prediction_and_sse(__global uchar *ref_frame,
     group_offset++;
   }
 
+  if(group_col >= group_stride * 2)
+    goto exit;
+
   if(!mv_input->do_compute)
     goto exit;
 

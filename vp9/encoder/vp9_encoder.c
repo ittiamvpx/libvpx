@@ -535,10 +535,6 @@ void vp9_alloc_compressor_data(VP9_COMP *cpi) {
   CHECK_MEM_ERROR(cm, cpi->tplist,
                   vpx_calloc(cm->sb_rows, sizeof(*cpi->tplist)));
 
-  if (cm->use_gpu) {
-    vp9_alloc_gpu_interface_buffers(cpi);
-  }
-
   // don't create more threads than rows available
   cpi->max_threads = MIN(cpi->max_threads, cm->sb_rows);
 
@@ -1235,12 +1231,6 @@ void vp9_remove_compressor(VP9_COMP *cpi) {
   if (cpi->use_fp_mb_stats) {
     vpx_free(cpi->twopass.frame_mb_stats_buf);
     cpi->twopass.frame_mb_stats_buf = NULL;
-  }
-#endif
-#if CONFIG_GPU_COMPUTE
-  if (cpi->common.use_gpu) {
-    cpi->egpu.remove(cpi);
-    cpi->common.gpu.remove(&cpi->common);
   }
 #endif
 
@@ -2535,10 +2525,8 @@ static void check_initial_width(VP9_COMP *cpi, int subsampling_x,
     alloc_raw_frame_buffers(cpi);
     alloc_ref_frame_buffers(cpi);
     alloc_util_frame_buffers(cpi);
-#if CONFIG_GPU_COMPUTE
     if (cm->use_gpu)
-      cpi->egpu.alloc_buffers(cpi);
-#endif
+      vp9_alloc_gpu_interface_buffers(cpi);
 
     init_motion_estimation(cpi);
 

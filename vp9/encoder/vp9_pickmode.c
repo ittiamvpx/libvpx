@@ -451,7 +451,7 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
   const int *const rd_thresh_freq_fact = cpi->rd.thresh_freq_fact[bsize];
   INTERP_FILTER filter_ref = cm->interp_filter;
   const int bsl = mi_width_log2(bsize);
-  const int pred_filter_search = cm->interp_filter == SWITCHABLE ?
+  int pred_filter_search = cm->interp_filter == SWITCHABLE ?
       (((mi_row + mi_col) >> bsl) +
        get_chessboard_index(cm->current_video_frame)) & 0x1 : 0;
   int const_motion[MAX_REF_FRAMES] = { 0 };
@@ -469,6 +469,9 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
 #if CONFIG_GPU_COMPUTE
   is_gpu_block |= (bsize == BLOCK_16X16);
 #endif
+
+  if (vp9_gpu_is_filter_search_disabled(cm, mi_col, bsize) && is_gpu_block)
+    pred_filter_search = 0;
 
   if (cpi->sf.reuse_inter_pred_sby) {
     int i;

@@ -45,17 +45,22 @@ const BLOCK_SIZE vp9_gpu_block_size_lookup[BLOCK_SIZES] = {
     GPU_BLOCK_INVALID,
 };
 
+const int gpu_mi_size_log2[GPU_BLOCK_SIZES] = {2, 1};
+
+int get_gpu_buffer_index(VP9_COMP *const cpi, int mi_row, int mi_col,
+                         GPU_BLOCK_SIZE gpu_bsize) {
+  int group_stride = cpi->blocks_in_row[gpu_bsize];
+  int bsl = gpu_mi_size_log2[gpu_bsize];
+  return ((mi_row >> bsl) * group_stride) + (mi_col >> bsl);
+}
+
 void vp9_gpu_set_mvinfo_offsets(VP9_COMP *const cpi, MACROBLOCK *const x,
                                 int mi_row, int mi_col, BLOCK_SIZE bsize) {
-  const VP9_COMMON *const cm = &cpi->common;
   const GPU_BLOCK_SIZE gpu_bsize = get_gpu_block_size(bsize);
-  const int blocks_in_row = (cm->sb_cols * num_mxn_blocks_wide_lookup[bsize]);
-  const int block_index_row = (mi_row >> mi_height_log2(bsize));
-  const int block_index_col = (mi_col >> mi_width_log2(bsize));
 
   if (gpu_bsize != GPU_BLOCK_INVALID)
     x->gpu_output[gpu_bsize] = cpi->gpu_output_base[gpu_bsize] +
-      (block_index_row * blocks_in_row) + block_index_col;
+      get_gpu_buffer_index(cpi, mi_row, mi_col, gpu_bsize);
 }
 
 void vp9_find_mv_refs_rt(const VP9_COMMON *cm, const MACROBLOCK *x,
@@ -95,9 +100,22 @@ void vp9_alloc_gpu_interface_buffers(VP9_COMP *cpi) {
   VP9_COMMON *const cm = &cpi->common;
   GPU_BLOCK_SIZE gpu_bsize;
 
+  for (gpu_bsize = GPU_BLOCK_32X32; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+    const int b_width_in_pixels_log2 = gpu_mi_size_log2[gpu_bsize] + 3;
+    const int b_width_in_pixels = 1 << b_width_in_pixels_log2;
+    const int ms_pixels = b_width_in_pixels / 2;
+    const int b_width_mask = b_width_in_pixels - 1;
+    int blocks_in_row = cm->width >> b_width_in_pixels_log2;
+    // If width is not a multiple of block size
+    if ((cm->width & b_width_mask) > ms_pixels)
+      blocks_in_row++;
+    cpi->blocks_in_row[gpu_bsize] = blocks_in_row;
+  }
+
 #if !CONFIG_GPU_COMPUTE
   for (gpu_bsize = GPU_BLOCK_32X32; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
 #else
+  cpi->egpu.alloc_buffers(cpi);
   if (LAST_GPU_BLOCK_SIZE >= GPU_BLOCK_16X16)
     return;
   // Allocate only for 16x16 block size, if required
@@ -105,7 +123,7 @@ void vp9_alloc_gpu_interface_buffers(VP9_COMP *cpi) {
   {
 #endif
     const BLOCK_SIZE bsize = get_actual_block_size(gpu_bsize);
-    const int blocks_in_row = (cm->sb_cols * num_mxn_blocks_wide_lookup[bsize]);
+    const int blocks_in_row = cpi->blocks_in_row[gpu_bsize];
     const int blocks_in_col = (cm->sb_rows * num_mxn_blocks_high_lookup[bsize]);
 
     CHECK_MEM_ERROR(cm, cpi->gpu_output_base[gpu_bsize],
@@ -120,6 +138,8 @@ void vp9_free_gpu_interface_buffers(VP9_COMP *cpi) {
 #if !CONFIG_GPU_COMPUTE
   for (gpu_bsize = GPU_BLOCK_32X32; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
 #else
+  cpi->egpu.remove(cpi);
+  cpi->common.gpu.remove(&cpi->common);
   if (LAST_GPU_BLOCK_SIZE >= GPU_BLOCK_16X16)
     return;
   // Free only for 16x16 block size, if required
@@ -201,7 +221,7 @@ static void vp9_gpu_fill_input_block(VP9_COMP *cpi, const TileInfo *const tile,
   const MV_REFERENCE_FRAME ref_frame = LAST_FRAME;
   int_mv *const candidates = mbmi->ref_mvs[ref_frame];
   const int bsl = mi_width_log2(bsize);
-  const int pred_filter_search = cm->interp_filter == SWITCHABLE ?
+  int pred_filter_search = cm->interp_filter == SWITCHABLE ?
       (((mi_row + mi_col) >> bsl) +
        get_chessboard_index(cm->current_video_frame)) & 0x1 : 0;
 
@@ -211,6 +231,9 @@ static void vp9_gpu_fill_input_block(VP9_COMP *cpi, const TileInfo *const tile,
   if (force_horz_split | force_vert_split) {
     return;
   }
+
+  if (vp9_gpu_is_filter_search_disabled(cm, mi_col, bsize))
+    pred_filter_search = 0;
 
   mi_width = num_8x8_blocks_wide_lookup[bsize];
   mi_height = num_8x8_blocks_high_lookup[bsize];
@@ -287,7 +310,7 @@ static void vp9_gpu_fill_mv_input(VP9_COMP *cpi, const TileInfo * const tile) {
       for (mi_col = tile->mi_col_start; mi_col < tile->mi_col_end; mi_col +=
           mi_col_step) {
         GPU_INPUT *gpu_input = gpu_input_base
-            + get_gpu_buffer_index(cm, mi_row, mi_col, bsize);
+            + get_gpu_buffer_index(cpi, mi_row, mi_col, gpu_bsize);
 
         if (!sf->partition_check) {
           const int sb_row_index = mi_row / MI_SIZE;
@@ -300,9 +323,13 @@ static void vp9_gpu_fill_mv_input(VP9_COMP *cpi, const TileInfo * const tile) {
 
           if (prev_mi[0]->mbmi.sb_type != bsize && is_static_area) {
             const int bsl = mi_width_log2(bsize);
-            const int pred_filter_search = cm->interp_filter == SWITCHABLE ?
+            int pred_filter_search = cm->interp_filter == SWITCHABLE ?
                 (((mi_row + mi_col) >> bsl) +
                  get_chessboard_index(cm->current_video_frame)) & 0x1 : 0;
+
+            if (vp9_gpu_is_filter_search_disabled(cm, mi_col, bsize))
+              pred_filter_search = 0;
+
             if (pred_filter_search)
               gpu_input->filter_type = SWITCHABLE;
             else

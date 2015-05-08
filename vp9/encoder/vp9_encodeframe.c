@@ -3074,13 +3074,18 @@ static void nonrd_use_partition(VP9_COMP *cpi, MACROBLOCK *const x,
 
   subsize = (bsize >= BLOCK_8X8) ? mi[0]->mbmi.sb_type : BLOCK_4X4;
   partition = partition_lookup[bsl][subsize];
-  if (x->data_parallel_processing && partition == PARTITION_NONE) {
+
+  if (x->data_parallel_processing) {
+    if(partition == PARTITION_NONE) {
 #if CONFIG_GPU_COMPUTE
-    int is_gpu_block = (bsize == BLOCK_16X16);
+      int is_gpu_block = (bsize == BLOCK_16X16);
 #else
-    int is_gpu_block = get_gpu_block_size(subsize) < BLOCKS_PROCESSED_ON_GPU;
+      int is_gpu_block = get_gpu_block_size(subsize) < BLOCKS_PROCESSED_ON_GPU;
 #endif
-    if (!is_gpu_block) return;
+      if (!is_gpu_block) return;
+    } else if (partition == PARTITION_VERT || partition == PARTITION_HORZ) {
+      return;
+    }
   }
   if (x->data_parallel_processing)
     vp9_zero(x->pred_mv);
@@ -3306,17 +3311,13 @@ static void encode_nonrd_sb_row(VP9_COMP *cpi, MACROBLOCK *const x,
           } else {
             // Check if the acquired memory pointer for the given subframe is
             // contiguous with respect to the previous subframes
-            BLOCK_SIZE bsize = get_actual_block_size(gpu_bsize);
-            const int blocks_in_row =
-                (cm->sb_cols * num_mxn_blocks_wide_lookup[bsize]);
-            const int block_index_row =
-                (subframe.mi_row_start >> mi_height_log2(bsize));
+            const int buffer_offset =
+                get_gpu_buffer_index(cpi, subframe.mi_row_start, 0, gpu_bsize);
 
-            (void)blocks_in_row;
-            (void)block_index_row;
+            (void)buffer_offset;
 
             assert(gpu_output_subframe - cpi->gpu_output_base[gpu_bsize] ==
-                   block_index_row * blocks_in_row);
+                buffer_offset);
 
             if (subframe_idx == MAX_SUB_FRAMES - 1)
               egpu->prepare_control_buffers(cpi);

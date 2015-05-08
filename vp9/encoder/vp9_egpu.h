@@ -122,13 +122,18 @@ static INLINE GPU_BLOCK_SIZE get_gpu_block_size(BLOCK_SIZE sb_type) {
   return vp9_gpu_block_size_lookup[sb_type];
 }
 
-static INLINE int get_gpu_buffer_index(VP9_COMMON *const cm,
-                                       int mi_row, int mi_col,
-                                       BLOCK_SIZE bsize) {
-  int group_stride = cm->width >> (b_width_log2(bsize) + 2);
-  int bsl = mi_width_log2(bsize);
-  return ((mi_row >> bsl) * group_stride) + (mi_col >> bsl);
+// If there are odd number of blocks in a row, then disable the filter search
+// for the last block of the row (so that it is GPU-friendly).
+static INLINE int vp9_gpu_is_filter_search_disabled(const VP9_COMMON *cm,
+                                                    int mi_col,
+                                                    BLOCK_SIZE bsize) {
+  const int bsl = mi_width_log2(bsize);
+  const int ms = num_8x8_blocks_wide_lookup[bsize];
+  return (mi_col + ms + ms / 2 >= cm->mi_cols && !((mi_col >> bsl) & 1));
 }
+
+int get_gpu_buffer_index(struct VP9_COMP *const cpi, int mi_row, int mi_col,
+                         GPU_BLOCK_SIZE gpu_bsize);
 
 void vp9_gpu_set_mvinfo_offsets(struct VP9_COMP *const cpi,
                                 struct macroblock *const x,

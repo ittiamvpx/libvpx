@@ -290,9 +290,9 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
 
   for (gpu_bsize = 0; gpu_bsize < BLOCKS_PROCESSED_ON_GPU; gpu_bsize++) {
     const BLOCK_SIZE bsize = get_actual_block_size(gpu_bsize);
-    const int block_cols = (cm->sb_cols * num_mxn_blocks_wide_lookup[bsize]);
-    const int block_rows = (cm->sb_rows * num_mxn_blocks_high_lookup[bsize]);
-    const int alloc_size = block_cols * block_rows;
+    const int blocks_in_col = (cm->sb_rows * num_mxn_blocks_high_lookup[bsize]);
+    const int blocks_in_row = cpi->blocks_in_row[gpu_bsize];
+    const int alloc_size = blocks_in_row * blocks_in_col;
     opencl_buffer *gpuinput_b_args = &eopencl->gpu_input[gpu_bsize];
     int subframe_idx;
 
@@ -334,9 +334,9 @@ static void vp9_opencl_alloc_buffers(VP9_COMP *cpi) {
       block_rows_sf = (mi_cols_aligned_to_sb(subframe.mi_row_end) -
           subframe.mi_row_start) >> mi_height_log2(bsize);
 
-      alloc_size_sf = block_cols * block_rows_sf;
+      alloc_size_sf = blocks_in_row * block_rows_sf;
 
-      sf_region.origin = block_row_offset * block_cols * sizeof(GPU_OUTPUT);
+      sf_region.origin = block_row_offset * blocks_in_row * sizeof(GPU_OUTPUT);
       sf_region.size = alloc_size_sf * sizeof(GPU_OUTPUT);
       eopencl->gpu_output_sub_buffer[gpu_bsize][subframe_idx].size =
           sf_region.size;
@@ -501,13 +501,12 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
 
   const int b_width_in_pixels_log2 = b_width_log2(bsize) + 2;
   const int b_width_in_pixels = 1 << b_width_in_pixels_log2;
-  const int b_width_mask = b_width_in_pixels - 1;
   const int b_height_in_pixels_log2 = b_height_log2(bsize) + 2;
   const int b_height_in_pixels = 1 << b_height_in_pixels_log2;
   const int b_height_mask = b_height_in_pixels - 1;
 
   SubFrameInfo subframe;
-  int num_block_rows, num_block_cols;
+  int blocks_in_col, blocks_in_row;
   int block_row_offset;
   int subframe_height;
 
@@ -539,16 +538,12 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   block_row_offset = subframe.mi_row_start >> mi_height_log2(bsize);
 
   subframe_height = (subframe.mi_row_end - subframe.mi_row_start) << MI_SIZE_LOG2;
-  num_block_rows = subframe_height >> b_height_in_pixels_log2;
-  num_block_cols = cm->width >> b_width_in_pixels_log2;
-
-  // If width or Height is not a multiple of block size
-  if ((cm->width & b_width_mask) > ms_pixels)
-    num_block_cols++;
+  blocks_in_col = subframe_height >> b_height_in_pixels_log2;
+  blocks_in_row = cpi->blocks_in_row[gpu_bsize];
 
   if (subframe_idx == MAX_SUB_FRAMES - 1)
     if ((cm->height & b_height_mask) > ms_pixels)
-      num_block_rows++;
+      blocks_in_col++;
 
   if (subframe_idx == 0)
     vp9_opencl_set_dynamic_kernel_args(cpi, gpu_bsize);
@@ -573,8 +568,8 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
       local_size[1] >> pixel_rows_per_workitem_log2_full_pixel[gpu_bsize];
 
   // total number of workitems
-  global_size[0] = num_block_cols * local_size_full_pixel[0];
-  global_size[1] = num_block_rows * local_size_full_pixel[1];
+  global_size[0] = blocks_in_row * local_size_full_pixel[0];
+  global_size[1] = blocks_in_col * local_size_full_pixel[1];
 
   // if the frame is partitioned in to sub-frames, the global work item
   // size is scaled accordingly. the global offset determines the subframe
@@ -592,8 +587,8 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
 
   // launch full pixel search kernel zero mv analysis
   // total number of workitems
-  global_size[0] = num_block_cols;
-  global_size[1] = num_block_rows;
+  global_size[0] = blocks_in_row;
+  global_size[1] = blocks_in_col;
 
   // if the frame is partitioned in to sub-frames, the global work item
   // size is scaled accordingly. the global offset determines the subframe
@@ -611,8 +606,8 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   local_size_sub_pixel[1] =
       local_size[1] >> pixel_rows_per_workitem_log2_sub_pixel[gpu_bsize];
 
-  global_size[0] = num_block_cols * local_size_sub_pixel[0] * 4;
-  global_size[1] = num_block_rows * local_size_sub_pixel[1];
+  global_size[0] = blocks_in_row * local_size_sub_pixel[0] * 4;
+  global_size[1] = blocks_in_col * local_size_sub_pixel[1];
 
   global_offset[0] = 0;
   global_offset[1] = block_row_offset * local_size_sub_pixel[1];
@@ -626,8 +621,8 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
       0, NULL, event_ptr[2]);
   assert(status == CL_SUCCESS);
 
-  global_size[0] = num_block_cols;
-  global_size[1] = num_block_rows;
+  global_size[0] = blocks_in_row;
+  global_size[1] = blocks_in_col;
 
   global_offset[0] = 0;
   global_offset[1] = block_row_offset;
@@ -639,8 +634,8 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
       0, NULL, event_ptr[3]);
   assert(status == CL_SUCCESS);
 
-  global_size[0] = num_block_cols * local_size_sub_pixel[0] * 4;
-  global_size[1] = num_block_rows * local_size_sub_pixel[1];
+  global_size[0] = blocks_in_row * local_size_sub_pixel[0] * 4;
+  global_size[1] = blocks_in_col * local_size_sub_pixel[1];
 
   global_offset[0] = 0;
   global_offset[1] = block_row_offset * local_size_sub_pixel[1];
@@ -654,8 +649,8 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
       0, NULL, event_ptr[4]);
   assert(status == CL_SUCCESS);
 
-  global_size[0] = num_block_cols;
-  global_size[1] = num_block_rows;
+  global_size[0] = blocks_in_row;
+  global_size[1] = blocks_in_col;
 
   global_offset[0] = 0;
   global_offset[1] = block_row_offset;
@@ -673,8 +668,8 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   local_size_inter_pred[1] =
       local_size[1] >> pixel_rows_per_workitem_log2_inter_pred[gpu_bsize];
 
-  global_size[0] = num_block_cols * local_size_inter_pred[0] * 2;
-  global_size[1] = num_block_rows * local_size_inter_pred[1];
+  global_size[0] = blocks_in_row * local_size_inter_pred[0] * 2;
+  global_size[1] = blocks_in_col * local_size_inter_pred[1];
 
   global_offset[0] = 0;
   global_offset[1] = block_row_offset * local_size_inter_pred[1];
@@ -688,8 +683,8 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   assert(status == CL_SUCCESS);
 
   // launch rd compute kernel
-  global_size[0] = num_block_cols;
-  global_size[1] = num_block_rows;
+  global_size[0] = blocks_in_row;
+  global_size[1] = blocks_in_col;
   global_offset[0] = 0;
   global_offset[1] = block_row_offset;
 
