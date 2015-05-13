@@ -558,6 +558,10 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
     assert(0);
   }
 
+  // For very small resolutions, this could happen for the last few sub-frames
+  if (blocks_in_col == 0)
+    goto skip_execution;
+
   // launch full pixel search new mv analysis kernel
   // number of workitems per block
   local_size[0] = b_width_in_pixels / workitem_size[0];
@@ -706,6 +710,7 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   }
 #endif
 
+skip_execution:
   status = clFlush(opencl->cmd_queue);
   assert(status == CL_SUCCESS);
 
