@@ -114,14 +114,6 @@ void vp9_alloc_gpu_interface_buffers(VP9_COMP *cpi) {
 
 #if !CONFIG_GPU_COMPUTE
   for (gpu_bsize = GPU_BLOCK_32X32; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
-#else
-  cpi->egpu.alloc_buffers(cpi);
-  if (LAST_GPU_BLOCK_SIZE >= GPU_BLOCK_16X16)
-    return;
-  // Allocate only for 16x16 block size, if required
-  gpu_bsize = GPU_BLOCK_16X16;
-  {
-#endif
     const BLOCK_SIZE bsize = get_actual_block_size(gpu_bsize);
     const int blocks_in_row = cpi->blocks_in_row[gpu_bsize];
     const int blocks_in_col = (cm->sb_rows * num_mxn_blocks_high_lookup[bsize]);
@@ -130,6 +122,10 @@ void vp9_alloc_gpu_interface_buffers(VP9_COMP *cpi) {
                     vpx_calloc(blocks_in_row * blocks_in_col,
                                sizeof(*cpi->gpu_output_base[gpu_bsize])));
   }
+#else
+  cpi->egpu.alloc_buffers(cpi);
+#endif
+
 }
 
 void vp9_free_gpu_interface_buffers(VP9_COMP *cpi) {
@@ -137,18 +133,14 @@ void vp9_free_gpu_interface_buffers(VP9_COMP *cpi) {
 
 #if !CONFIG_GPU_COMPUTE
   for (gpu_bsize = GPU_BLOCK_32X32; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
-#else
-  cpi->egpu.remove(cpi);
-  cpi->common.gpu.remove(&cpi->common);
-  if (LAST_GPU_BLOCK_SIZE >= GPU_BLOCK_16X16)
-    return;
-  // Free only for 16x16 block size, if required
-  gpu_bsize = GPU_BLOCK_16X16;
-  {
-#endif
     vpx_free(cpi->gpu_output_base[gpu_bsize]);
     cpi->gpu_output_base[gpu_bsize] = NULL;
   }
+#else
+  cpi->egpu.remove(cpi);
+  cpi->common.gpu.remove(&cpi->common);
+#endif
+
 }
 
 #if CONFIG_GPU_COMPUTE
@@ -197,7 +189,7 @@ static void vp9_gpu_fill_rd_parameters(VP9_COMP *cpi, MACROBLOCK *const x) {
     rd_param_ptr->nmvjointcost[i] = x->nmvjointcost[i];
   }
 
-  for (gpu_bsize = 0; gpu_bsize < BLOCKS_PROCESSED_ON_GPU; gpu_bsize++) {
+  for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
     BLOCK_SIZE bsize = get_actual_block_size(gpu_bsize);
 
     // assuming segmentation is disabled and segement id for the frame is '0'
@@ -293,7 +285,7 @@ static void vp9_gpu_fill_mv_input(VP9_COMP *cpi, const TileInfo * const tile) {
     }
   }
 
-  for (gpu_bsize = 0; gpu_bsize < BLOCKS_PROCESSED_ON_GPU; ++gpu_bsize) {
+  for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; ++gpu_bsize) {
     const BLOCK_SIZE bsize = get_actual_block_size(gpu_bsize);
     const int mi_row_step = num_8x8_blocks_high_lookup[bsize];
     const int mi_col_step = num_8x8_blocks_wide_lookup[bsize];
@@ -372,7 +364,7 @@ void vp9_gpu_mv_compute(VP9_COMP *cpi, MACROBLOCK *const x) {
   // enqueue kernels for gpu
   for (subframe_idx = CPU_SUB_FRAMES; subframe_idx < MAX_SUB_FRAMES;
        subframe_idx++) {
-    for (gpu_bsize = 0; gpu_bsize < BLOCKS_PROCESSED_ON_GPU; gpu_bsize++) {
+    for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
       egpu->execute(cpi, gpu_bsize, subframe_idx);
     }
   }

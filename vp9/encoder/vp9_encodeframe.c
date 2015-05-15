@@ -3077,12 +3077,9 @@ static void nonrd_use_partition(VP9_COMP *cpi, MACROBLOCK *const x,
 
   if (x->data_parallel_processing) {
     if(partition == PARTITION_NONE) {
-#if CONFIG_GPU_COMPUTE
-      int is_gpu_block = (bsize == BLOCK_16X16);
-#else
-      int is_gpu_block = get_gpu_block_size(subsize) < BLOCKS_PROCESSED_ON_GPU;
-#endif
-      if (!is_gpu_block) return;
+      int is_gpu_block = get_gpu_block_size(subsize) != GPU_BLOCK_INVALID;
+      if (!is_gpu_block)
+        return;
     } else if (partition == PARTITION_VERT || partition == PARTITION_HORZ) {
       return;
     }
@@ -3211,15 +3208,9 @@ static void nonrd_pick_partition_data_parallel(VP9_COMP *cpi,
          x->min_partition_size == BLOCK_8X8);
 
   for (h = 0; h < num_32x32_in_64x64; ++h) {
-
-#if CONFIG_GPU_COMPUTE
-    i = GPU_BLOCK_16X16;
-    {
-#else
     // First iteration(i = 0) will run for 32x32 block
     // Second iteration(i = 1) will run for four 16x16 childs blocks
-    for (i = 0; i < BLOCKS_PROCESSED_ON_GPU; ++i) {
-#endif
+    for (i = 0; i < GPU_BLOCK_SIZES; ++i) {
       BLOCK_SIZE bsize = get_actual_block_size(i);
       PC_TREE *pc_tree_i = cpi->pc_root[thread_id]->split[h];
       const int ms_32x32 = num_8x8_blocks_wide_lookup[BLOCK_32X32];
@@ -3300,7 +3291,7 @@ static void encode_nonrd_sb_row(VP9_COMP *cpi, MACROBLOCK *const x,
       egpu->enc_sync_read(cpi, subframe_idx);
       if (mi_row == subframe.mi_row_start) {
         GPU_BLOCK_SIZE gpu_bsize;
-        for (gpu_bsize = 0; gpu_bsize < BLOCKS_PROCESSED_ON_GPU; gpu_bsize++) {
+        for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
           GPU_OUTPUT *gpu_output_subframe;
           egpu->acquire_output_buffer(cpi, gpu_bsize,
                                       (void **)&gpu_output_subframe,
@@ -3631,8 +3622,6 @@ static void encode_tiles(VP9_COMP *cpi) {
     x->data_parallel_processing = 1;
 #if CONFIG_GPU_COMPUTE
     vp9_gpu_mv_compute(cpi, x);
-    if (LAST_GPU_BLOCK_SIZE < GPU_BLOCK_16X16)
-      encode_sb_rows(cpi, x, 0, cm->mi_rows, MI_BLOCK_SIZE);
 #else
     encode_sb_rows(cpi, x, 0, cm->mi_rows, MI_BLOCK_SIZE);
 #endif
@@ -3740,12 +3729,10 @@ int encoding_thread_process(thread_context *const thread_ctxt, void* data2) {
     }
     vp9_zero(x->zcoeff_blk);
   }
+#if !CONFIG_GPU_COMPUTE
   // Call the Data parallel MV compute (to be performed by GPU)
   if (cm->use_gpu &&
       cpi->sf.use_nonrd_pick_mode &&
-#if CONFIG_GPU_COMPUTE
-      LAST_GPU_BLOCK_SIZE < GPU_BLOCK_16X16 &&
-#endif
       !frame_is_intra_only(cm)) {
     // TODO(ram-ittiam): Remove this assert, after adding appropriate sanity
     // checks for use_gpu setting
@@ -3755,6 +3742,7 @@ int encoding_thread_process(thread_context *const thread_ctxt, void* data2) {
                    thread_ctxt->mi_row_step);
     x->data_parallel_processing = 0;
   }
+#endif
   encode_sb_rows(cpi, x, thread_ctxt->mi_row_start, thread_ctxt->mi_row_end,
                  thread_ctxt->mi_row_step);
 
