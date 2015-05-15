@@ -3077,7 +3077,9 @@ static void nonrd_use_partition(VP9_COMP *cpi, MACROBLOCK *const x,
 
   if (x->data_parallel_processing) {
     if(partition == PARTITION_NONE) {
-      int is_gpu_block = get_gpu_block_size(subsize) != GPU_BLOCK_INVALID;
+      GPU_BLOCK_SIZE gpu_bsize = get_gpu_block_size(bsize);
+      int is_gpu_block = gpu_bsize >= cpi->start_gpu_bsize &&
+                         gpu_bsize <= cpi->end_gpu_bsize;
       if (!is_gpu_block)
         return;
     } else if (partition == PARTITION_VERT || partition == PARTITION_HORZ) {
@@ -3616,6 +3618,7 @@ static void encode_tiles(VP9_COMP *cpi) {
   // Call the Data parallel MV compute (to be performed by GPU)
   if (cm->use_gpu &&
       cpi->sf.use_nonrd_pick_mode && !frame_is_intra_only(cm)) {
+    vp9_set_gpu_block_sizes(cpi);
     // TODO(ram-ittiam): Remove this assert, after adding appropriate sanity
     // checks for use_gpu setting
     assert(cm->prev_mi != NULL);
@@ -3648,20 +3651,21 @@ void encode_tiles_mt(VP9_COMP *cpi) {
   // Initialize cur_sb_col to -1 for all SB rows.
   vpx_memset(cpi->cur_sb_col, -1, (sizeof(*cpi->cur_sb_col) * cm->sb_rows));
 
-#if CONFIG_GPU_COMPUTE
   // Call the Data parallel MV compute (to be performed by GPU)
   if (cm->use_gpu &&
       cpi->sf.use_nonrd_pick_mode && !frame_is_intra_only(cm)) {
     MACROBLOCK *const x = &cpi->mb;
+    vp9_set_gpu_block_sizes(cpi);
+    (void)x;
+#if CONFIG_GPU_COMPUTE
     // TODO(ram-ittiam): Remove this assert, after adding appropriate sanity
     // checks for use_gpu setting
     assert(cm->prev_mi != NULL);
     x->data_parallel_processing = 1;
     vp9_gpu_mv_compute(cpi, x);
     x->data_parallel_processing = 0;
-
-  }
 #endif
+  }
 
   for (thread_id = 0; thread_id < cpi->max_threads ; ++thread_id) {
     VP9Worker *const worker = &cpi->enc_thread_hndl[thread_id];
@@ -3743,6 +3747,7 @@ int encoding_thread_process(thread_context *const thread_ctxt, void* data2) {
     x->data_parallel_processing = 0;
   }
 #endif
+  (void)cm;
   encode_sb_rows(cpi, x, thread_ctxt->mi_row_start, thread_ctxt->mi_row_end,
                  thread_ctxt->mi_row_step);
 

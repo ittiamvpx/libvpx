@@ -47,6 +47,31 @@ const BLOCK_SIZE vp9_gpu_block_size_lookup[BLOCK_SIZES] = {
 
 const int gpu_mi_size_log2[GPU_BLOCK_SIZES] = {2, 1};
 
+void vp9_set_gpu_block_sizes(VP9_COMP *const cpi) {
+  SPEED_FEATURES *const sf = &cpi->sf;
+  switch (sf->partition_search_type) {
+    case SOURCE_VAR_BASED_PARTITION: {
+      cpi->start_gpu_bsize = GPU_BLOCK_INVALID + 2;
+      cpi->end_gpu_bsize = GPU_BLOCK_INVALID + 1;
+      break;
+    }
+    case FIXED_PARTITION: {
+      const BLOCK_SIZE bsize = sf->always_this_block_size;
+      GPU_BLOCK_SIZE gpu_bsize = get_gpu_block_size(bsize);
+      cpi->start_gpu_bsize = cpi->end_gpu_bsize = gpu_bsize;
+      break;
+    }
+    case REFERENCE_PARTITION: {
+      cpi->start_gpu_bsize = 0;
+      cpi->end_gpu_bsize = GPU_BLOCK_SIZES - 1;
+      break;
+    }
+    default:
+      assert(0);
+      break;
+  }
+}
+
 int get_gpu_buffer_index(VP9_COMP *const cpi, int mi_row, int mi_col,
                          GPU_BLOCK_SIZE gpu_bsize) {
   int group_stride = cpi->blocks_in_row[gpu_bsize];
@@ -129,9 +154,8 @@ void vp9_alloc_gpu_interface_buffers(VP9_COMP *cpi) {
 }
 
 void vp9_free_gpu_interface_buffers(VP9_COMP *cpi) {
-  GPU_BLOCK_SIZE gpu_bsize;
-
 #if !CONFIG_GPU_COMPUTE
+  GPU_BLOCK_SIZE gpu_bsize;
   for (gpu_bsize = GPU_BLOCK_32X32; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
     vpx_free(cpi->gpu_output_base[gpu_bsize]);
     cpi->gpu_output_base[gpu_bsize] = NULL;
@@ -257,7 +281,42 @@ static void vp9_gpu_fill_input_block(VP9_COMP *cpi, const TileInfo *const tile,
 
 }
 
-static void vp9_gpu_fill_mv_input(VP9_COMP *cpi, const TileInfo * const tile) {
+static void fill_mv_fixed_partition(VP9_COMP *cpi,
+                                        const TileInfo * const tile) {
+  SPEED_FEATURES * const sf = &cpi->sf;
+  int mi_row, mi_col;
+  VP9_EGPU *egpu = &cpi->egpu;
+  VP9_COMMON * const cm = &cpi->common;
+  const BLOCK_SIZE bsize = sf->always_this_block_size;
+  GPU_BLOCK_SIZE gpu_bsize = get_gpu_block_size(bsize);
+  const int mi_row_step = num_8x8_blocks_high_lookup[bsize];
+  const int mi_col_step = num_8x8_blocks_wide_lookup[bsize];
+  GPU_INPUT *gpu_input_base;
+  if (gpu_bsize == GPU_BLOCK_INVALID)
+    assert(0);
+
+  gpu_input_base = egpu->gpu_input[gpu_bsize];
+
+  for (mi_row = tile->mi_row_start; mi_row < tile->mi_row_end; mi_row +=
+      mi_row_step) {
+    int subframe_idx;
+
+    subframe_idx = vp9_get_subframe_index(cm, mi_row);
+    if (subframe_idx < CPU_SUB_FRAMES)
+      continue;
+
+    for (mi_col = tile->mi_col_start; mi_col < tile->mi_col_end; mi_col +=
+        mi_col_step) {
+      GPU_INPUT *gpu_input = gpu_input_base
+          + get_gpu_buffer_index(cpi, mi_row, mi_col, gpu_bsize);
+      vp9_gpu_fill_input_block(cpi, tile, gpu_input, mi_row, mi_col,
+                               bsize);
+    }
+  }
+}
+
+static void fill_mv_reference_partition(VP9_COMP *cpi,
+                                        const TileInfo * const tile) {
   SPEED_FEATURES * const sf = &cpi->sf;
   int mi_row, mi_col;
   VP9_EGPU *egpu = &cpi->egpu;
@@ -338,6 +397,25 @@ static void vp9_gpu_fill_mv_input(VP9_COMP *cpi, const TileInfo * const tile) {
   }
 }
 
+static void vp9_gpu_fill_mv_input(VP9_COMP *cpi, const TileInfo * const tile) {
+  SPEED_FEATURES * const sf = &cpi->sf;
+
+  switch (sf->partition_search_type) {
+    case SOURCE_VAR_BASED_PARTITION:
+      break;
+    case FIXED_PARTITION:
+      fill_mv_fixed_partition(cpi, tile);
+      break;
+    case REFERENCE_PARTITION:
+      fill_mv_reference_partition(cpi, tile);
+      break;
+    default:
+      assert(0);
+      break;
+  }
+
+}
+
 void vp9_gpu_mv_compute(VP9_COMP *cpi, MACROBLOCK *const x) {
   VP9_COMMON *const cm = &cpi->common;
   const int tile_cols = 1 << cm->log2_tile_cols;
@@ -364,7 +442,8 @@ void vp9_gpu_mv_compute(VP9_COMP *cpi, MACROBLOCK *const x) {
   // enqueue kernels for gpu
   for (subframe_idx = CPU_SUB_FRAMES; subframe_idx < MAX_SUB_FRAMES;
        subframe_idx++) {
-    for (gpu_bsize = 0; gpu_bsize < GPU_BLOCK_SIZES; gpu_bsize++) {
+    for (gpu_bsize = cpi->start_gpu_bsize; gpu_bsize < cpi->end_gpu_bsize + 1;
+         gpu_bsize++) {
       egpu->execute(cpi, gpu_bsize, subframe_idx);
     }
   }

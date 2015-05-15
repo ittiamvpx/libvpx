@@ -88,7 +88,6 @@ typedef struct VP9_EGPU {
   void *compute_framework;
   GPU_INPUT *gpu_input[GPU_BLOCK_SIZES];
   GPU_RD_PARAMETERS *gpu_rd_parameters;
-
   void (*alloc_buffers)(struct VP9_COMP *cpi);
   void (*free_buffers)(struct VP9_COMP *cpi);
   void (*acquire_output_buffer)(struct VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
@@ -121,6 +120,8 @@ static INLINE int vp9_gpu_is_filter_search_disabled(const VP9_COMMON *cm,
   const int ms = num_8x8_blocks_wide_lookup[bsize];
   return (mi_col + ms + ms / 2 >= cm->mi_cols && !((mi_col >> bsl) & 1));
 }
+
+void vp9_set_gpu_block_sizes(struct VP9_COMP *const cpi);
 
 int get_gpu_buffer_index(struct VP9_COMP *const cpi, int mi_row, int mi_col,
                          GPU_BLOCK_SIZE gpu_bsize);

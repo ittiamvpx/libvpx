@@ -439,6 +439,8 @@ typedef struct VP9_COMP {
 #if CONFIG_GPU_COMPUTE
   VP9_EGPU egpu;
 #endif
+  GPU_BLOCK_SIZE start_gpu_bsize;
+  GPU_BLOCK_SIZE end_gpu_bsize;
 } VP9_COMP;
 
 void vp9_initialize_enc();

@@ -465,7 +465,9 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
   struct buf_2d orig_dst = pd->dst;
   PRED_BUFFER *best_pred = NULL;
   PRED_BUFFER *this_mode_pred = NULL;
-  int is_gpu_block = get_gpu_block_size(bsize) != GPU_BLOCK_INVALID;
+  GPU_BLOCK_SIZE gpu_bsize = get_gpu_block_size(bsize);
+  int is_gpu_block = gpu_bsize >= cpi->start_gpu_bsize &&
+                     gpu_bsize <= cpi->end_gpu_bsize;
 
   if (vp9_gpu_is_filter_search_disabled(cm, mi_col, bsize) && is_gpu_block)
     pred_filter_search = 0;
