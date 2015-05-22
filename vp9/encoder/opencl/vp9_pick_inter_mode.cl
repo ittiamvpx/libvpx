@@ -134,6 +134,16 @@ typedef enum GPU_BLOCK_SIZE {
   GPU_BLOCK_INVALID = GPU_BLOCK_SIZES
 } GPU_BLOCK_SIZE;
 
+typedef enum {
+  DIAMOND = 0,
+  NSTEP = 1,
+  HEX = 2,
+  BIGDIA = 3,
+  SQUARE = 4,
+  FAST_HEX = 5,
+  FAST_DIAMOND = 6
+} SEARCH_METHODS;
+
 #define NUM_PIXELS_PER_WORKITEM 8
 #define VP9_ENC_BORDER_IN_PIXELS    160
 #define SUBPEL_BITS 3
@@ -184,6 +194,10 @@ typedef enum GPU_BLOCK_SIZE {
 #define MV_COST_WEIGHT      108
 #define LOCAL_STRIDE (BLOCK_SIZE_IN_PIXELS / NUM_PIXELS_PER_WORKITEM)
 #define LOCAL_HEIGHT  BLOCK_SIZE_IN_PIXELS
+
+#define GPU_SEARCH_METHODS 2
+#define GPU_SEARCH_OFFSET(search_method) ((search_method) - FAST_HEX)
+
 
 /* The maximum number of steps in a step search given the largest allowed
  * initial step
@@ -376,11 +390,19 @@ __constant INTERP_FILTER interp_filter[4] =
 
 __constant int nmvjointsadcost[MV_JOINTS] = {600,300,300,300};
 
-__constant int hex_num_candidates[MAX_PATTERN_SCALES] = {8, 6};
+__constant int num_candidates_arr[GPU_SEARCH_METHODS][MAX_PATTERN_SCALES] = {
+    {8, 6},
+    {4}
+ };
 
-__constant MV hex_candidates[MAX_PATTERN_SCALES][MAX_PATTERN_CANDIDATES] = {
-    {{-1, -1}, {0, -1}, {1, -1}, {1, 0}, {1, 1}, { 0, 1}, { -1, 1}, {-1, 0}},
-    {{-1, -2}, {1, -2}, {2, 0}, {1, 2}, { -1, 2}, { -2, 0}},
+__constant MV candidates_arr[GPU_SEARCH_METHODS][MAX_PATTERN_SCALES][MAX_PATTERN_CANDIDATES] = {
+    {
+        {{-1, -1}, {0, -1}, {1, -1}, {1, 0}, {1, 1}, { 0, 1}, { -1, 1}, {-1, 0}},
+        {{-1, -2}, {1, -2}, {2, 0}, {1, 2}, { -1, 2}, { -2, 0}},
+    },
+    {
+        {{0, -1}, {1, 0}, { 0, 1}, {-1, 0}}
+    },
   };
 
 __constant ushort2 vp9_bilinear_filters[16] = {
@@ -933,13 +955,14 @@ int get_sad(__global uchar *ref_frame, __global uchar *cur_frame,
 }
 
 MV full_pixel_pattern_search(__global uchar *ref_frame,
-                                    __global uchar *cur_frame, int stride,
-                                    __local int* intermediate_sad,
-                                    MV best_mv, MV fcenter_mv,
-                                    __global int *nmvsadcost_0,
-                                    __global int *nmvsadcost_1,
-                                    INIT *x, int sad_per_bit,
-                                    int *pbestsad, int pattern)
+                             __global uchar *cur_frame, int stride,
+                             __local int* intermediate_sad,
+                             MV best_mv, MV fcenter_mv,
+                             __global int *nmvsadcost_0,
+                             __global int *nmvsadcost_1,
+                             INIT *x, int sad_per_bit,
+                             int *pbestsad, int pattern,
+                             SEARCH_METHODS search_method)
 {
   MV this_mv;
   char best_site = -1;
@@ -948,14 +971,20 @@ MV full_pixel_pattern_search(__global uchar *ref_frame,
   char i, k;
   char next_chkpts_indices[PATTERN_CANDIDATES_REF];
 
+  if (search_method == FAST_DIAMOND && pattern != 0)
+    return best_mv;
+
+  int num_candidates = num_candidates_arr[GPU_SEARCH_OFFSET(search_method)][pattern];
+  __constant MV (*candidates)[MAX_PATTERN_CANDIDATES] = candidates_arr[GPU_SEARCH_OFFSET(search_method)];
+
   br = best_mv.row;
   bc = best_mv.col;
   bestsad = *pbestsad;
   best_site = -1;
   if (gpu_check_bounds(x, br, bc, 1 << pattern)) {
-    for (i = 0; i < hex_num_candidates[pattern]; i++) {
-      this_mv.row = br + hex_candidates[pattern][i].row;
-      this_mv.col = bc + hex_candidates[pattern][i].col;
+    for (i = 0; i < num_candidates; i++) {
+      this_mv.row = br + candidates[pattern][i].row;
+      this_mv.col = bc + candidates[pattern][i].col;
 
       thissad = get_sad(ref_frame, cur_frame, stride, intermediate_sad, this_mv);
 
@@ -966,8 +995,8 @@ MV full_pixel_pattern_search(__global uchar *ref_frame,
   if (best_site == -1) {
     goto exit;
   } else {
-    br += hex_candidates[pattern][best_site].row;
-    bc += hex_candidates[pattern][best_site].col;
+    br += candidates[pattern][best_site].row;
+    bc += candidates[pattern][best_site].col;
     k = best_site;
   }
 
@@ -975,14 +1004,14 @@ MV full_pixel_pattern_search(__global uchar *ref_frame,
   if (pattern != 0) {
     do {
       best_site = -1;
-      next_chkpts_indices[0] = (k == 0) ? hex_num_candidates[pattern] - 1 : k - 1;
+      next_chkpts_indices[0] = (k == 0) ? num_candidates - 1 : k - 1;
       next_chkpts_indices[1] = k;
-      next_chkpts_indices[2] = (k == hex_num_candidates[pattern] - 1) ? 0 : k + 1;
+      next_chkpts_indices[2] = (k == num_candidates - 1) ? 0 : k + 1;
 
       if (gpu_check_bounds(x, br, bc, 1 << pattern)) {
         for (i = 0; i < PATTERN_CANDIDATES_REF; i++) {
-          this_mv.row = br + hex_candidates[pattern][next_chkpts_indices[i]].row;
-          this_mv.col = bc + hex_candidates[pattern][next_chkpts_indices[i]].col;
+          this_mv.row = br + candidates[pattern][next_chkpts_indices[i]].row;
+          this_mv.col = bc + candidates[pattern][next_chkpts_indices[i]].col;
 
           thissad = get_sad(ref_frame, cur_frame, stride, intermediate_sad, this_mv);
           CHECK_BETTER
@@ -991,8 +1020,8 @@ MV full_pixel_pattern_search(__global uchar *ref_frame,
 
       if (best_site != -1) {
         k = next_chkpts_indices[best_site];
-        br += hex_candidates[pattern][k].row;
-        bc += hex_candidates[pattern][k].col;
+        br += candidates[pattern][k].row;
+        bc += candidates[pattern][k].col;
       }
     } while(best_site != -1);
   }
@@ -1012,7 +1041,8 @@ MV combined_motion_search(__global uchar *ref_frame,
                           int stride,
                           int mi_rows,
                           int mi_cols,
-                          __local int *intermediate_int) {
+                          __local int *intermediate_int,
+                          SEARCH_METHODS search_method) {
   __global int   *nmvsadcost_0 = rd_parameters->nmvsadcost[0] + MV_MAX;
   __global int   *nmvsadcost_1 = rd_parameters->nmvsadcost[1] + MV_MAX;
 
@@ -1020,6 +1050,8 @@ MV combined_motion_search(__global uchar *ref_frame,
   MV best_mv;
   MV fcenter_mv;
   MV this_mv;
+  int num_candidates[MAX_PATTERN_SCALES];
+  MV candidates[MAX_PATTERN_SCALES][MAX_PATTERN_CANDIDATES];
 
   int sad_per_bit = rd_parameters->sad_per_bit;
   INIT x;
@@ -1081,13 +1113,15 @@ MV combined_motion_search(__global uchar *ref_frame,
                                       intermediate_int, best_mv, fcenter_mv,
                                       nmvsadcost_0, nmvsadcost_1,
                                       &x, sad_per_bit,
-                                      &bestsad, 1);
+                                      &bestsad, 1,
+                                      search_method);
   // Search with pattern = 0
   best_mv = full_pixel_pattern_search(ref_frame, cur_frame, stride,
                                       intermediate_int, best_mv, fcenter_mv,
                                       nmvsadcost_0, nmvsadcost_1,
                                       &x, sad_per_bit,
-                                      &bestsad, 0);
+                                      &bestsad, 0,
+                                      search_method);
 
   best_mv.row = best_mv.row * 8;
   best_mv.col = best_mv.col * 8;
@@ -1424,7 +1458,8 @@ void vp9_full_pixel_search(__global uchar *ref_frame,
                            __global GPU_OUTPUT *sse_variance_output,
                            __global GPU_RD_PARAMETERS *rd_parameters,
                            int mi_rows,
-                           int mi_cols) {
+                           int mi_cols,
+                           SEARCH_METHODS search_method) {
   __local int intermediate_int[1];
   short global_row = get_global_id(1);
 
@@ -1457,7 +1492,7 @@ void vp9_full_pixel_search(__global uchar *ref_frame,
                                    mv_input, rd_parameters,
                                    stride,
                                    mi_rows, mi_cols,
-                                   intermediate_int);
+                                   intermediate_int, search_method);
 
   sse_variance_output->mv = best_mv;
 exit:

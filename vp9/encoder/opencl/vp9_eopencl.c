@@ -188,11 +188,15 @@ static void vp9_opencl_set_dynamic_kernel_args(VP9_COMP *cpi,
   YV12_BUFFER_CONFIG *img_src = cpi->Source;
   YV12_BUFFER_CONFIG *frm_ref = get_ref_frame_buffer(cpi, LAST_FRAME);
   cl_int status;
+  SPEED_FEATURES *const sf = &cpi->sf;
+  SEARCH_METHODS search_method = sf->mv.search_method;
 
   status = clSetKernelArg(eopencl->full_pixel_search[gpu_bsize], 0,
                           sizeof(cl_mem), &frm_ref->gpu_mem);
   status |= clSetKernelArg(eopencl->full_pixel_search[gpu_bsize], 1,
                            sizeof(cl_mem), &img_src->gpu_mem);
+  status |= clSetKernelArg(eopencl->full_pixel_search[gpu_bsize], 8,
+                           sizeof(SEARCH_METHODS), &search_method);
   assert(status == CL_SUCCESS);
 
   status = clSetKernelArg(eopencl->rd_calculation_zeromv[gpu_bsize], 0,

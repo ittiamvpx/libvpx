@@ -698,6 +698,7 @@ static int vp9_pattern_search_sad(const MACROBLOCK *x,
                                   const MV candidates[MAX_PATTERN_SCALES]
                                                      [MAX_PATTERN_CANDIDATES]) {
   const MACROBLOCKD *const xd = &x->e_mbd;
+  MB_MODE_INFO *mbmi = &xd->mi[0]->mbmi;
   static const int search_param_to_steps[MAX_MVSEARCH_STEPS] = {
     10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
   };
@@ -804,6 +805,12 @@ static int vp9_pattern_search_sad(const MACROBLOCK *x,
           bc += candidates[s][best_site].col;
           k = best_site;
         }
+      }
+
+      if (x->data_parallel_processing
+          && (mbmi->sb_type == BLOCK_32X32 || s <= 0)) {
+        best_site = -1;
+        continue;
       }
 
       do {
