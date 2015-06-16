@@ -287,8 +287,7 @@ static void set_rt_speed_feature(VP9_COMP *cpi, SPEED_FEATURES *sf,
     sf->tx_size_search_method = is_keyframe ? USE_LARGESTALL : USE_TX_8X8;
 
     // This feature is only enabled when partition search is disabled.
-    if (!cm->use_gpu)
-      sf->reuse_inter_pred_sby = 1;
+    sf->reuse_inter_pred_sby = 1;
 
     // Increase mode checking threshold for NEWMV.
     sf->elevate_newmv_thresh = 2000;

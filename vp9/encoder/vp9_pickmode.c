@@ -565,8 +565,6 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
         start_mode = ZEROMV;
         end_mode = NEWMV;
       } else {
-        GPU_BLOCK_SIZE gpu_bsize = get_gpu_block_size(bsize);
-
         start_mode = NEARESTMV;
         end_mode = NEARMV;
         // Read the best_mode, best_rd etc., among ZEROMV, NEWMV
@@ -590,6 +588,10 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
       assert(ref_frame == LAST_FRAME);
     }
 
+    // For 32x32 GPU compute assumes ZEROMV is not required to be computed
+    if (x->data_parallel_processing)
+      assert(!(cpi->sf.inter_mode_mask[BLOCK_32X32] & (1 << ZEROMV)));
+
     for (this_mode = start_mode; this_mode <= end_mode; ++this_mode) {
       int rate_mv = 0;
       int mode_rd_thresh;
@@ -597,10 +599,6 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
       if (const_motion[ref_frame] &&
           (this_mode == NEARMV || this_mode == ZEROMV))
         continue;
-
-      // For 32x32 GPU compute assumes ZEROMV is not required to be computed
-      if (x->data_parallel_processing && bsize == BLOCK_32X32 && this_mode == ZEROMV)
-        assert(!(cpi->sf.inter_mode_mask[bsize] & (1 << this_mode)));
 
       if (x->data_parallel_processing && bsize == BLOCK_16X16 &&
           this_mode == NEWMV && skip_txfm)
@@ -612,6 +610,7 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
       mode_rd_thresh =
           rd_threshes[mode_idx[ref_frame -
                                LAST_FRAME][INTER_OFFSET(this_mode)]];
+
       if (rd_less_than_thresh(best_rd, mode_rd_thresh,
                               rd_thresh_freq_fact[this_mode]))
         continue;
@@ -648,6 +647,22 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
         }
       }
 
+      if (x->use_gpu && !x->data_parallel_processing && is_gpu_block &&
+          mbmi->mv[0].as_int == 0 &&
+          x->gpu_output[gpu_bsize]->best_mode == ZEROMV) {
+        mbmi->interp_filter = (filter_ref == SWITCHABLE) ? EIGHTTAP: filter_ref;
+        vp9_build_inter_predictors_sby(xd, mi_row, mi_col, bsize);
+        dist = x->gpu_output[gpu_bsize]->returndistortion;
+        rate = x->gpu_output[gpu_bsize]->returnrate +
+            cpi->inter_mode_cost[mbmi->mode_context[ref_frame]]
+                                [INTER_OFFSET(this_mode)] -
+            cpi->inter_mode_cost[BOTH_PREDICTED][INTER_OFFSET(ZEROMV)];
+        this_rd = RDCOST(x->rdmult, x->rddiv, rate, dist);
+        x->skip_txfm[0] = x->gpu_output[gpu_bsize]->skip_txfm;
+        mbmi->tx_size = x->gpu_output[gpu_bsize]->tx_size;
+
+        goto END;
+      }
 
       if ((this_mode == NEWMV || filter_ref == SWITCHABLE) &&
           pred_filter_search &&
@@ -734,6 +749,7 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
       (void)ctx;
 #endif
 
+END:
       if (this_rd < best_rd || x->skip) {
         best_rd = this_rd;
         *returnrate = rate;
@@ -746,7 +762,6 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
 
         if (cpi->sf.reuse_inter_pred_sby) {
           free_pred_buffer(best_pred);
-
           best_pred = this_mode_pred;
         }
       } else {
@@ -764,8 +779,6 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
   }
 
   if (x->data_parallel_processing) {
-    GPU_BLOCK_SIZE gpu_bsize = get_gpu_block_size(bsize);
-
     x->gpu_output[gpu_bsize]->best_rd = best_rd;
     x->gpu_output[gpu_bsize]->returnrate = *returnrate;
     x->gpu_output[gpu_bsize]->returndistortion = *returndistortion;
@@ -837,7 +850,28 @@ void vp9_pick_inter_mode(VP9_COMP *cpi, MACROBLOCK *x,
         x->skip_txfm[0] = skip_txfm;
       }
     }
-    if (cpi->sf.reuse_inter_pred_sby)
+    if (cpi->sf.reuse_inter_pred_sby) {
       pd->dst = orig_dst;
+      if (mbmi->ref_frame[0] == INTRA_FRAME)
+        vp9_convolve_copy(tmp[0].data, bw, pd->dst.buf, pd->dst.stride, NULL, 0,
+                          NULL, 0, bw, bh);
+    }
+  }
+
+  if (cm->use_gpu && is_gpu_block && cpi->sf.reuse_inter_pred_sby) {
+    if (mbmi->mode == NEWMV || mbmi->mode == ZEROMV) {
+      int ref;
+      const int is_compound = has_second_ref(mbmi);
+      for (ref = 0; ref < 1 + is_compound; ++ref) {
+        YV12_BUFFER_CONFIG *cfg = get_ref_frame_buffer(cpi,
+                                                       mbmi->ref_frame[ref]);
+        assert(cfg != NULL);
+        vp9_setup_pre_planes(xd, ref, cfg, mi_row, mi_col,
+                             &xd->block_refs[ref]->sf);
+      }
+      best_pred = NULL;
+      pd->dst = orig_dst;
+      vp9_build_inter_predictors_sby(xd, mi_row, mi_col, bsize);
+    }
   }
 }

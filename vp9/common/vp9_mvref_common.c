@@ -107,7 +107,10 @@ void find_mv_refs_idx(const VP9_COMMON *cm, const MACROBLOCKD *xd,
 
  Done:
 
-  mi->mbmi.mode_context[ref_frame] = counter_to_context[context_counter];
+  if (data_parallel_processing)
+    mi->mbmi.mode_context[ref_frame] = BOTH_PREDICTED;
+  else
+    mi->mbmi.mode_context[ref_frame] = counter_to_context[context_counter];
 
   // Clamp vectors
   for (i = 0; i < MAX_MV_REF_CANDIDATES; ++i)
