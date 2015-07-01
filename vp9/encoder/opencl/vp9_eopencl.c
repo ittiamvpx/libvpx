@@ -105,8 +105,10 @@ static void vp9_opencl_set_static_kernel_args(VP9_COMP *cpi,
   status |= clSetKernelArg(eopencl->full_pixel_search[gpu_bsize], 5,
                            sizeof(cl_mem), rdopt_parameters);
   status |= clSetKernelArg(eopencl->full_pixel_search[gpu_bsize], 6,
-                           sizeof(cl_int), &mi_rows);
+                           sizeof(cl_mem), sum_sse);
   status |= clSetKernelArg(eopencl->full_pixel_search[gpu_bsize], 7,
+                           sizeof(cl_int), &mi_rows);
+  status |= clSetKernelArg(eopencl->full_pixel_search[gpu_bsize], 8,
                            sizeof(cl_int), &mi_cols);
   assert(status == CL_SUCCESS);
 
@@ -119,10 +121,8 @@ static void vp9_opencl_set_static_kernel_args(VP9_COMP *cpi,
   status |= clSetKernelArg(eopencl->rd_calculation_zeromv[gpu_bsize], 5,
                            sizeof(cl_mem), rdopt_parameters);
   status |= clSetKernelArg(eopencl->rd_calculation_zeromv[gpu_bsize], 6,
-                           sizeof(cl_mem), sum_sse);
-  status |= clSetKernelArg(eopencl->rd_calculation_zeromv[gpu_bsize], 7,
                            sizeof(cl_int), &mi_rows);
-  status |= clSetKernelArg(eopencl->rd_calculation_zeromv[gpu_bsize], 8,
+  status |= clSetKernelArg(eopencl->rd_calculation_zeromv[gpu_bsize], 7,
                            sizeof(cl_int), &mi_cols);
   assert(status == CL_SUCCESS);
 
@@ -195,7 +195,7 @@ static void vp9_opencl_set_dynamic_kernel_args(VP9_COMP *cpi,
                           sizeof(cl_mem), &frm_ref->gpu_mem);
   status |= clSetKernelArg(eopencl->full_pixel_search[gpu_bsize], 1,
                            sizeof(cl_mem), &img_src->gpu_mem);
-  status |= clSetKernelArg(eopencl->full_pixel_search[gpu_bsize], 8,
+  status |= clSetKernelArg(eopencl->full_pixel_search[gpu_bsize], 9,
                            sizeof(SEARCH_METHODS), &search_method);
   assert(status == CL_SUCCESS);
 
@@ -566,6 +566,23 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
   if (blocks_in_col == 0)
     goto skip_execution;
 
+  // launch full pixel search kernel zero mv analysis
+  // total number of workitems
+  global_size[0] = blocks_in_row;
+  global_size[1] = blocks_in_col;
+
+  // if the frame is partitioned in to sub-frames, the global work item
+  // size is scaled accordingly. the global offset determines the subframe
+  // that is being analysed by the gpu.
+  global_offset[0] = 0;
+  global_offset[1] = block_row_offset;
+
+  status = clEnqueueNDRangeKernel(opencl->cmd_queue,
+                                  eopencl->rd_calculation_zeromv[gpu_bsize],
+                                  2, global_offset, global_size, NULL,
+                                  0, NULL, event_ptr[1]);
+  assert(status == CL_SUCCESS);
+
   // launch full pixel search new mv analysis kernel
   // number of workitems per block
   local_size[0] = b_width_in_pixels / workitem_size[0];
@@ -591,23 +608,6 @@ static void vp9_opencl_execute(VP9_COMP *cpi, GPU_BLOCK_SIZE gpu_bsize,
       global_offset, global_size,
       local_size_full_pixel,
       0, NULL, event_ptr[0]);
-  assert(status == CL_SUCCESS);
-
-  // launch full pixel search kernel zero mv analysis
-  // total number of workitems
-  global_size[0] = blocks_in_row;
-  global_size[1] = blocks_in_col;
-
-  // if the frame is partitioned in to sub-frames, the global work item
-  // size is scaled accordingly. the global offset determines the subframe
-  // that is being analysed by the gpu.
-  global_offset[0] = 0;
-  global_offset[1] = block_row_offset;
-
-  status = clEnqueueNDRangeKernel(opencl->cmd_queue,
-                                  eopencl->rd_calculation_zeromv[gpu_bsize],
-                                  2, global_offset, global_size, NULL,
-                                  0, NULL, event_ptr[1]);
   assert(status == CL_SUCCESS);
 
   local_size_sub_pixel[0] = local_size[0];

@@ -1457,16 +1457,23 @@ void vp9_full_pixel_search(__global uchar *ref_frame,
                            __global GPU_INPUT *mv_input,
                            __global GPU_OUTPUT *sse_variance_output,
                            __global GPU_RD_PARAMETERS *rd_parameters,
+                           __global subpel_sum_sse *rd_calc_tmp_buffers,
                            int mi_rows,
                            int mi_cols,
                            SEARCH_METHODS search_method) {
   __local int intermediate_int[1];
+  __global int   *nmvcost_0        = rd_parameters->mvcost[0] + MV_MAX;
+  __global int   *nmvcost_1        = rd_parameters->mvcost[1] + MV_MAX;
+  __global int   *nmvjointcost     = rd_parameters->nmvjointcost;
+
   short global_row = get_global_id(1);
+  short global_col = get_global_id(0);
 
   short group_col = get_group_id(0);
   int group_stride = get_num_groups(0);
 
   int local_col = get_local_id(0);
+  int local_row = get_local_id(1);
   int global_offset = (global_row * PIXEL_ROWS_PER_WORKITEM * stride) +
                       (group_col * BLOCK_SIZE_IN_PIXELS) +
                       (local_col * NUM_PIXELS_PER_WORKITEM);
@@ -1485,8 +1492,15 @@ void vp9_full_pixel_search(__global uchar *ref_frame,
 
   ref_frame += global_offset;
 
+  rd_calc_tmp_buffers += group_offset;
+
   if (!mv_input->do_compute)
     goto exit;
+
+  if (!mv_input->do_newmv)
+    goto exit;
+
+  int64_t best_rd = sse_variance_output->best_rd;
 
   best_mv = combined_motion_search(ref_frame, cur_frame,
                                    mv_input, rd_parameters,
@@ -1494,7 +1508,64 @@ void vp9_full_pixel_search(__global uchar *ref_frame,
                                    mi_rows, mi_cols,
                                    intermediate_int, search_method);
 
-  sse_variance_output->mv = best_mv;
+  nearest_mv = mv_input->nearest_mv;
+
+  int rate_mv = vp9_mv_bit_cost(&best_mv, &nearest_mv,
+                                nmvjointcost, nmvcost_0, nmvcost_1,
+                                MV_COST_WEIGHT);
+
+  int rate_mode = rd_parameters->inter_mode_cost[mv_input->mode_context]
+                                                 [GPU_INTER_OFFSET(NEWMV)];
+  mv_input->do_newmv = !(RDCOST(rd_parameters->rd_mult, rd_parameters->rd_div,
+                                (rate_mv + rate_mode), 0) > best_rd);
+
+  if (mv_input->do_newmv && local_col == 0 && local_row == 0) {
+    unsigned int besterr;
+    int error_per_bit = rd_parameters->error_per_bit;
+    MV minmv, maxmv;
+    INIT x;
+    int tc, tr;
+    int hstep_limit = 6;
+    MV fcenter_mv;
+
+    fcenter_mv.row = nearest_mv.row >> 3;
+    fcenter_mv.col = nearest_mv.col >> 3;
+
+    int mi_row = (global_row * PIXEL_ROWS_PER_WORKITEM) / MI_SIZE;
+    int mi_col = global_col;
+
+#if BLOCK_SIZE_IN_PIXELS == 32
+    mi_row = (mi_row >> 2) << 2;
+    mi_col = (mi_col >> 2) << 2;
+#elif BLOCK_SIZE_IN_PIXELS == 16
+    mi_row = (mi_row >> 1) << 1;
+    mi_col = (mi_col >> 1) << 1;
+#endif
+
+    vp9_gpu_set_mv_search_range(&x, mi_row, mi_col, mi_rows,
+                                mi_cols, (BLOCK_SIZE_IN_PIXELS >> 4));
+
+    minmv.col = MAX(x.mv_col_min * 8, fcenter_mv.col - MV_MAX);
+    maxmv.col = MIN(x.mv_col_max * 8, fcenter_mv.col + MV_MAX);
+    minmv.row = MAX(x.mv_row_min * 8, fcenter_mv.row - MV_MAX);
+    maxmv.row = MIN(x.mv_row_max * 8, fcenter_mv.row + MV_MAX);
+
+    tr = best_mv.row;
+    tc = best_mv.col;
+
+    if (!(tc - hstep_limit >= minmv.col && tc + hstep_limit <= maxmv.col
+        && tr - hstep_limit >= minmv.row && tr + hstep_limit <= maxmv.row))  {
+      mv_input->do_newmv = -1;
+    }
+
+    sse_variance_output->rate_mv = rate_mv;
+    sse_variance_output->mv = best_mv;
+
+    __global int *intermediate_sum_sse = (__global int *)rd_calc_tmp_buffers;
+    vstore8(0, 0, intermediate_sum_sse);
+    vstore2(0, 4, intermediate_sum_sse);
+  }
+
 exit:
   return;
 }
@@ -1506,23 +1577,15 @@ void vp9_full_pixel_search_zeromv(__global uchar *ref_frame,
     __global GPU_INPUT *mv_input,
     __global GPU_OUTPUT *sse_variance_output,
     __global GPU_RD_PARAMETERS *rd_parameters,
-    __global subpel_sum_sse *rd_calc_tmp_buffers,
     int mi_rows,
     int mi_cols
 ) {
-  __global int   *nmvcost_0        = rd_parameters->mvcost[0] + MV_MAX;
-  __global int   *nmvcost_1        = rd_parameters->mvcost[1] + MV_MAX;
-  __global int   *nmvjointcost     = rd_parameters->nmvjointcost;
   __global uchar *tmp_ref, *tmp_cur;
-
   int global_col = get_global_id(0);
   int global_row = get_global_id(1);
   int global_stride = get_global_size(0);
   int global_offset = (global_row * stride * BLOCK_SIZE_IN_PIXELS) +
                       (global_col * BLOCK_SIZE_IN_PIXELS);
-
-  int local_col = get_local_id(0);
-  int local_row = get_local_id(1);
   int sum;
   uint sse, variance;
   int rate, actual_rate;
@@ -1533,10 +1596,6 @@ void vp9_full_pixel_search_zeromv(__global uchar *ref_frame,
   TX_MODE tx_mode = rd_parameters->tx_mode;
   int dc_quant = rd_parameters->dc_quant;
   int ac_quant = rd_parameters->ac_quant;
-  MV  best_mv, nearest_mv;
-  int8 c_squared;
-  short8 c;
-  int mi_row, mi_col;
 
   global_offset += (VP9_ENC_BORDER_IN_PIXELS * stride) + VP9_ENC_BORDER_IN_PIXELS;
 
@@ -1548,35 +1607,19 @@ void vp9_full_pixel_search_zeromv(__global uchar *ref_frame,
   int gpu_bsize = GPU_BLOCK_16X16;
 #endif
 
-  mv_input            += (global_row * global_stride + global_col);
+  mv_input += (global_row * global_stride + global_col);
   sse_variance_output += (global_row * global_stride + global_col);
-  rd_calc_tmp_buffers += (global_row * global_stride + global_col);
+
+  uchar8 curr_data, pred_data;
 
   cur_frame += global_offset;
-  uchar8 curr_data;
-  uchar8 pred_data;
-  PREDICTION_MODE best_mode = ZEROMV;
-  INTERP_FILTER newmv_filter, best_pred_filter = EIGHTTAP;
-
   ref_frame += global_offset;
 
   tmp_ref = ref_frame;
   tmp_cur = cur_frame;
 
-  if(!mv_input->do_compute)
+  if (!mv_input->do_compute)
     goto exit;
-
-  mi_row = global_row * (BLOCK_SIZE_IN_PIXELS / NUM_PIXELS_PER_WORKITEM);
-  mi_col = global_col * (BLOCK_SIZE_IN_PIXELS / NUM_PIXELS_PER_WORKITEM);
-#if BLOCK_SIZE_IN_PIXELS == 32
-  mi_row = (mi_row >> 2) << 2;
-  mi_col = (mi_col >> 2) << 2;
-#elif BLOCK_SIZE_IN_PIXELS == 16
-  mi_row = (mi_row >> 1) << 1;
-  mi_col = (mi_col >> 1) << 1;
-#endif
-
-  best_mv = sse_variance_output->mv;
 
   // ZEROMV not required for BLOCK_32X32
   if (BLOCK_SIZE_IN_PIXELS != 32) {
@@ -1616,9 +1659,9 @@ void vp9_full_pixel_search_zeromv(__global uchar *ref_frame,
 
     CALCULATE_RATE_DIST
     actual_rate += rd_parameters->inter_mode_cost[mv_input->mode_context]
-                                                 [GPU_INTER_OFFSET(ZEROMV)];
+                                                  [GPU_INTER_OFFSET(ZEROMV)];
     this_rd = RDCOST(rd_parameters->rd_mult, rd_parameters->rd_div,
-        actual_rate, actual_dist);
+                     actual_rate, actual_dist);
 
     best_rd = this_rd;
     sse_variance_output->returnrate = actual_rate;
@@ -1629,73 +1672,30 @@ void vp9_full_pixel_search_zeromv(__global uchar *ref_frame,
     sse_variance_output->skip_txfm = skip_txfm;
     sse_variance_output->tx_size = tx_size;
 
-    if (this_rd < (int64_t)(1 << num_pels_log2_lookup[bsize]))
-    {
+    if (this_rd < (int64_t)(1 << num_pels_log2_lookup[bsize])) {
       mv_input->do_newmv = 0;
       goto exit;
     }
+
     int mode_rd_thresh =
         rd_parameters->threshes[gpu_bsize][mode_idx[0][INTER_OFFSET(NEWMV)]];
+
     if (rd_less_than_thresh(best_rd, mode_rd_thresh,
-            rd_parameters->thresh_fact_newmv[gpu_bsize]))
-    {
+            rd_parameters->thresh_fact_newmv[gpu_bsize])) {
       mv_input->do_newmv = 0;
       goto exit;
     }
-  }
-
-  nearest_mv = mv_input->nearest_mv;
-
-  int rate_mv = vp9_mv_bit_cost(&best_mv, &nearest_mv,
-                                       nmvjointcost, nmvcost_0, nmvcost_1,
-                                       MV_COST_WEIGHT);
-
-  int rate_mode = rd_parameters->inter_mode_cost[mv_input->mode_context]
-                                                [GPU_INTER_OFFSET(NEWMV)];
-  mv_input->do_newmv = !(RDCOST(rd_parameters->rd_mult, rd_parameters->rd_div,
-                         (rate_mv + rate_mode), 0) > best_rd);
 
 #if BLOCK_SIZE_IN_PIXELS == 16
-  if (skip_txfm) {
-    mv_input->do_newmv = 0;
-  }
+    if (skip_txfm) {
+      mv_input->do_newmv = 0;
+    }
 #endif
 
-  if (mv_input->do_newmv) {
-    unsigned int besterr;
-    int error_per_bit = rd_parameters->error_per_bit;
-    MV minmv,maxmv;
-    INIT x;
-    int tc, tr;
-    int hstep_limit = 6;
-    MV fcenter_mv;
-
-    fcenter_mv.row = nearest_mv.row >> 3;
-    fcenter_mv.col = nearest_mv.col >> 3;
-
-    vp9_gpu_set_mv_search_range(&x, mi_row, mi_col, mi_rows,
-                                mi_cols, (BLOCK_SIZE_IN_PIXELS >> 4));
-
-    minmv.col = MAX(x.mv_col_min * 8, fcenter_mv.col - MV_MAX);
-    maxmv.col = MIN(x.mv_col_max * 8, fcenter_mv.col + MV_MAX);
-    minmv.row = MAX(x.mv_row_min * 8, fcenter_mv.row - MV_MAX);
-    maxmv.row = MIN(x.mv_row_max * 8, fcenter_mv.row + MV_MAX);
-
-    tr = best_mv.row;
-    tc = best_mv.col;
-
-    if (!(tc - hstep_limit >= minmv.col && tc + hstep_limit <= maxmv.col && tr - hstep_limit >= minmv.row && tr + hstep_limit <= maxmv.row))  {
-      mv_input->do_newmv = -1;
-    }
-
-    __global int *intermediate_sum_sse = (__global int *)rd_calc_tmp_buffers;
-    vstore8(0, 0, intermediate_sum_sse);
-    vstore2(0, 4, intermediate_sum_sse);
-
+  } else {
+    sse_variance_output->best_rd = INT64_MAX;
+    sse_variance_output->best_mode = ZEROMV;
   }
-
-  sse_variance_output->rate_mv = rate_mv;
-
 exit:
   return;
 }
@@ -1727,10 +1727,10 @@ void vp9_sub_pixel_search_halfpel_filtering(__global uchar *ref_frame,
 
   mv_input += group_offset;
 
-  if(!mv_input->do_compute)
+  if (!mv_input->do_compute)
     goto exit;
 
-  if(mv_input->do_newmv < 1)
+  if (mv_input->do_newmv < 1)
     goto exit;
 
   rd_calc_tmp_buffers += group_offset;
